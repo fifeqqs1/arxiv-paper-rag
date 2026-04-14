@@ -7,6 +7,7 @@ from langchain_ollama import ChatOllama
 from src.config import Settings
 from src.exceptions import OllamaConnectionError, OllamaException, OllamaTimeoutError
 from src.schemas.ollama import RAGResponse
+from src.services.citations import compact_repeated_single_paper_citations
 from src.services.ollama.prompts import RAGPromptBuilder, ResponseParser
 
 logger = logging.getLogger(__name__)
@@ -447,9 +448,14 @@ class OllamaClient:
                 if use_structured_output:
                     # Try to parse structured response if enabled
                     parsed_response = self.response_parser.parse_structured_response(answer_text)
+                    parsed_response["answer"] = compact_repeated_single_paper_citations(
+                        parsed_response.get("answer", "")
+                    )
                     logger.debug(f"Parsed response: {parsed_response}")
                     return parsed_response
                 else:
+                    answer_text = compact_repeated_single_paper_citations(answer_text)
+
                     # For plain text response, build simple response structure
                     sources = []
                     seen_urls = set()

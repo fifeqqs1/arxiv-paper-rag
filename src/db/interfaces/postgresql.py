@@ -51,6 +51,9 @@ class PostgreSQLDatabase(BaseDatabase):
             inspector = inspect(self.engine)
             existing_tables = inspector.get_table_names()
 
+            # Import models so every SQLAlchemy table is registered before create_all.
+            import src.models  # noqa: F401
+
             # Create tables if they don't exist (idempotent operation)
             Base.metadata.create_all(bind=self.engine)
 

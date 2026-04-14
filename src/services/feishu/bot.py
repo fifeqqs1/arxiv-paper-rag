@@ -4,8 +4,9 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import lark_oapi as lark
@@ -13,6 +14,8 @@ import redis
 import requests
 from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, CreateMessageResponse
 from src.config import Settings
+from src.repositories.feishu_conversation import FeishuConversationRepository, StoredConversationMessage
+from src.services.citations import compact_repeated_single_paper_citations
 from src.services.feishu.paper_ingestion import FeishuPaperIngestionService
 
 logger = logging.getLogger(__name__)
@@ -141,6 +144,10 @@ DEFAULT_PAPER_RECOMMENDATION_COUNT = 3
 MAX_PAPER_RECOMMENDATION_COUNT = 5
 SEARCH_POOL_MULTIPLIER = 8
 LATEST_PAPER_POOL_MIN = 20
+RECENT_MESSAGE_LIMIT = 12
+SUMMARY_MAX_CHARS = 1600
+CONTEXTUAL_QUERY_MAX_CHARS = 950
+DEFAULT_CONVERSATION_MAX_MESSAGES = 100
 RESET_MEMORY_COMMANDS = ("新对话", "新消息")
 INTENT_RESET = "reset"
 INTENT_PAPER_SEARCH = "paper_search"
@@ -180,6 +187,17 @@ class FeishuPaperReference:
 
 
 @dataclass(frozen=True)
+class FeishuConversationTurn:
+    """A compact message stored in hot context for fast follow-up handling."""
+
+    role: str
+    content: str
+    intent: str = ""
+    message_id: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
 class FeishuConversationState:
     """Lightweight per-chat memory for paper-centric follow-up handling."""
 
@@ -187,6 +205,9 @@ class FeishuConversationState:
     active_papers: list[FeishuPaperReference]
     last_intent: str = ""
     last_query: str = ""
+    summary: str = ""
+    recent_messages: list[FeishuConversationTurn] = field(default_factory=list)
+    persisted_message_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -200,10 +221,18 @@ class FeishuIntentDecision:
 class FeishuBot:
     """Minimal Feishu bot powered by the existing RAG API."""
 
-    def __init__(self, settings: Settings, redis_client: Optional[redis.Redis] = None):
+    def __init__(
+        self,
+        settings: Settings,
+        redis_client: Optional[redis.Redis] = None,
+        database: Optional[Any] = None,
+        conversation_repository_factory: Callable[[Any], FeishuConversationRepository] = FeishuConversationRepository,
+    ):
         self.settings = settings
         self.feishu_settings = settings.feishu
         self.redis = redis_client
+        self.database = database
+        self._conversation_repository_factory = conversation_repository_factory
         self.client = (
             lark.Client.builder()
             .app_id(self.feishu_settings.app_id)
@@ -215,10 +244,17 @@ class FeishuBot:
         self._context_lock = threading.Lock()
         self._memory_context: dict[str, tuple[float, str]] = {}
         self._paper_ingestion_service: Optional[FeishuPaperIngestionService] = None
+        self._cleanup_stop_event = threading.Event()
+        self._cleanup_thread: Optional[threading.Thread] = None
+        self._conversation_max_messages = max(
+            0,
+            int(getattr(self.feishu_settings, "conversation_max_messages", DEFAULT_CONVERSATION_MAX_MESSAGES)),
+        )
 
     def start(self) -> None:
         """Start the Feishu long-connection client."""
         logger.info("Starting Feishu bot...")
+        self._start_daily_cleanup_worker()
 
         event_handler = (
             lark.EventDispatcherHandler.builder("", "")
@@ -234,6 +270,55 @@ class FeishuBot:
         )
 
         ws_client.start()
+
+    def _start_daily_cleanup_worker(self) -> None:
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            return
+
+        self._cleanup_stop_event.clear()
+        self._cleanup_thread = threading.Thread(
+            target=self._daily_cleanup_loop,
+            name="feishu-conversation-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def _daily_cleanup_loop(self) -> None:
+        while not self._cleanup_stop_event.is_set():
+            wait_seconds = self._seconds_until_next_cleanup()
+            if self._cleanup_stop_event.wait(wait_seconds):
+                return
+            self._clear_all_conversation_memory()
+
+    def _seconds_until_next_cleanup(self, now: Optional[datetime] = None) -> float:
+        now = now or datetime.now().astimezone()
+        cleanup_hour = max(0, min(23, int(getattr(self.feishu_settings, "memory_cleanup_hour", 0))))
+        cleanup_minute = max(0, min(59, int(getattr(self.feishu_settings, "memory_cleanup_minute", 0))))
+        next_cleanup = now.replace(hour=cleanup_hour, minute=cleanup_minute, second=0, microsecond=0)
+        if next_cleanup <= now:
+            next_cleanup += timedelta(days=1)
+        return max((next_cleanup - now).total_seconds(), 1.0)
+
+    def _clear_all_conversation_memory(self) -> None:
+        """Clear Feishu conversation memory from cache and persistent storage."""
+        if self.redis:
+            try:
+                keys = list(self.redis.scan_iter(match="feishu:context:*"))
+                if keys:
+                    self.redis.delete(*keys)
+            except Exception as exc:
+                logger.warning(f"Failed to clear Feishu conversation memory from Redis: {exc}")
+
+        with self._context_lock:
+            self._memory_context.clear()
+
+        if self.database:
+            try:
+                with self.database.get_session() as session:
+                    repo = self._conversation_repository_factory(session)
+                    repo.clear_all_memory()
+            except Exception as exc:
+                logger.warning(f"Failed to clear Feishu conversation memory from PostgreSQL: {exc}")
 
     def _handle_message_event(self, data: Any) -> None:
         """Handle Feishu events quickly and dispatch background work."""
@@ -283,36 +368,96 @@ class FeishuBot:
             papers = self._find_recommended_papers(context, query, requested_count)
 
             if not papers:
-                return "我暂时没有在当前已索引的论文库里找到合适的论文。你可以换一个更具体的方向，或者先让我补充导入更多论文。"
+                reply = "我暂时没有在当前已索引的论文库里找到合适的论文。你可以换一个更具体的方向，或者先让我补充导入更多论文。"
+                self._remember_exchange(
+                    context,
+                    state=FeishuConversationState(
+                        recent_papers=state.recent_papers,
+                        active_papers=state.active_papers,
+                        last_intent=decision.intent,
+                        last_query=query,
+                        summary=state.summary,
+                        recent_messages=state.recent_messages,
+                        persisted_message_count=state.persisted_message_count,
+                    ),
+                    intent=decision.intent,
+                    user_query=query,
+                    assistant_reply=reply,
+                )
+                return reply
 
-            self._store_recent_papers(context, papers)
-            return self._format_paper_recommendations(query, papers)
+            reply = self._format_paper_recommendations(query, papers)
+            self._remember_exchange(
+                context,
+                state=FeishuConversationState(
+                    recent_papers=papers,
+                    active_papers=papers,
+                    last_intent=decision.intent,
+                    last_query=query,
+                    summary=state.summary,
+                    recent_messages=state.recent_messages,
+                    persisted_message_count=state.persisted_message_count,
+                ),
+                intent=decision.intent,
+                user_query=query,
+                assistant_reply=reply,
+            )
+            return reply
 
         if decision.intent in {INTENT_PAPER_SUMMARY, INTENT_PAPER_DEEP_DIVE, INTENT_PAPER_COMPARE}:
             if not decision.papers:
-                return "我现在还没有记住你上一轮提到的论文。你可以先让我推荐几篇，或者直接告诉我论文标题 / arXiv ID。"
+                reply = "我现在还没有记住你上一轮提到的论文。你可以先让我推荐几篇，或者直接告诉我论文标题 / arXiv ID。"
+                self._remember_exchange(
+                    context,
+                    state=FeishuConversationState(
+                        recent_papers=state.recent_papers,
+                        active_papers=state.active_papers,
+                        last_intent=decision.intent,
+                        last_query=query,
+                        summary=state.summary,
+                        recent_messages=state.recent_messages,
+                        persisted_message_count=state.persisted_message_count,
+                    ),
+                    intent=decision.intent,
+                    user_query=query,
+                    assistant_reply=reply,
+                )
+                return reply
 
             reply = self._ask_paper_focused_rag(query, decision.papers, decision.intent)
-            self._store_conversation_state(
+            self._remember_exchange(
                 context,
-                FeishuConversationState(
+                state=FeishuConversationState(
                     recent_papers=state.recent_papers or decision.papers,
                     active_papers=decision.papers,
                     last_intent=decision.intent,
                     last_query=query,
+                    summary=state.summary,
+                    recent_messages=state.recent_messages,
+                    persisted_message_count=state.persisted_message_count,
                 ),
+                intent=decision.intent,
+                user_query=query,
+                assistant_reply=reply,
             )
             return reply
 
-        reply = self._ask_rag_api(query=query)
-        self._store_conversation_state(
+        rag_query = self._build_general_contextual_query(query, state)
+        reply = self._ask_rag_api(query=rag_query)
+        self._remember_exchange(
             context,
-            FeishuConversationState(
+            state=FeishuConversationState(
                 recent_papers=state.recent_papers,
                 active_papers=state.active_papers,
                 last_intent=INTENT_GENERAL_RAG,
                 last_query=query,
+                summary=state.summary,
+                recent_messages=state.recent_messages,
+                persisted_message_count=state.persisted_message_count,
             ),
+            intent=INTENT_GENERAL_RAG,
+            user_query=query,
+            assistant_reply=reply,
         )
         return reply
 
@@ -348,6 +493,7 @@ class FeishuBot:
 
         data = response.json()
         answer = data.get("answer", "").strip() or "暂时没有生成有效回答。"
+        answer = compact_repeated_single_paper_citations(answer)
         sources = self._normalize_sources(data.get("sources", []))
 
         if not sources:
@@ -355,6 +501,155 @@ class FeishuBot:
 
         source_lines = "\n".join(f"{idx}. {url}" for idx, url in enumerate(sources, 1))
         return f"{answer}\n\n参考来源：\n{source_lines}"
+
+    def _build_general_contextual_query(self, query: str, state: FeishuConversationState) -> str:
+        """Rewrite short/general follow-ups with persisted conversation memory."""
+        if not self._looks_like_general_followup(query, state):
+            return query
+
+        history = self._format_recent_messages_for_prompt(state.recent_messages[-8:])
+        parts = [
+            "请结合下面的历史对话理解用户的连续追问，再回答当前问题。",
+            "如果当前问题已经是独立新问题，可以忽略不相关历史。",
+        ]
+        if state.summary:
+            parts.append(f"历史摘要：{state.summary}")
+        if history:
+            parts.append(f"最近对话：\n{history}")
+        parts.append(f"当前问题：{query}")
+        contextual_query = "\n".join(parts)
+        return self._truncate(contextual_query, CONTEXTUAL_QUERY_MAX_CHARS)
+
+    def _looks_like_general_followup(self, query: str, state: FeishuConversationState) -> bool:
+        if not (state.summary or state.recent_messages or state.last_query):
+            return False
+
+        lowered = query.lower()
+        hints = FOLLOWUP_HINTS + DETAIL_HINTS + COMPARE_HINTS + CONTEXTUAL_REFERENCE_HINTS + (
+            "刚才",
+            "前面",
+            "上面",
+            "上一条",
+            "继续",
+            "that",
+            "it",
+            "them",
+            "more",
+        )
+        if any(hint in query or hint in lowered for hint in hints):
+            return True
+
+        return len(query.strip()) <= 24 and bool(state.last_query)
+
+    def _remember_exchange(
+        self,
+        context: FeishuMessageContext,
+        *,
+        state: FeishuConversationState,
+        intent: str,
+        user_query: str,
+        assistant_reply: str,
+    ) -> None:
+        user_turn = FeishuConversationTurn(
+            role="user",
+            content=user_query,
+            intent=intent,
+            message_id=context.message_id,
+        )
+        assistant_turn = FeishuConversationTurn(
+            role="assistant",
+            content=assistant_reply,
+            intent=intent,
+        )
+        recent_messages = (state.recent_messages + [user_turn, assistant_turn])[-RECENT_MESSAGE_LIMIT:]
+        estimated_count = state.persisted_message_count + 2 if state.persisted_message_count else len(recent_messages)
+        summary = self._build_conversation_summary(state.summary, recent_messages)
+        updated_state = FeishuConversationState(
+            recent_papers=state.recent_papers,
+            active_papers=state.active_papers,
+            last_intent=state.last_intent,
+            last_query=state.last_query,
+            summary=summary,
+            recent_messages=recent_messages,
+            persisted_message_count=estimated_count,
+        )
+
+        if self.database:
+            persisted_state = self._persist_exchange_to_database(
+                context,
+                state=updated_state,
+                intent=intent,
+                user_query=user_query,
+                assistant_reply=assistant_reply,
+            )
+            self._write_cached_conversation_state(context, persisted_state)
+            return
+
+        self._write_cached_conversation_state(context, updated_state)
+
+    def _persist_exchange_to_database(
+        self,
+        context: FeishuMessageContext,
+        *,
+        state: FeishuConversationState,
+        intent: str,
+        user_query: str,
+        assistant_reply: str,
+    ) -> FeishuConversationState:
+        try:
+            with self.database.get_session() as session:
+                repo = self._conversation_repository_factory(session)
+                conversation = repo.get_or_create_session(
+                    conversation_key=self._context_key(context),
+                    chat_id=context.chat_id,
+                    chat_type=context.chat_type,
+                    sender_open_id=context.sender_open_id,
+                    receive_id=context.receive_id,
+                    receive_id_type=context.receive_id_type,
+                )
+                repo.append_message(
+                    session_id=conversation.id,
+                    role="user",
+                    content=user_query,
+                    intent=intent,
+                    message_id=context.message_id,
+                    metadata={"chat_type": context.chat_type},
+                )
+                repo.append_message(
+                    session_id=conversation.id,
+                    role="assistant",
+                    content=assistant_reply,
+                    intent=intent,
+                    metadata={"receive_id_type": context.receive_id_type},
+                )
+                message_count = repo.count_messages(conversation.id)
+                persisted_recent_messages = self._turns_from_stored_messages(
+                    repo.get_recent_messages(conversation.id, RECENT_MESSAGE_LIMIT)
+                )
+                repo.update_session_state(
+                    conversation,
+                    recent_papers=self._serialize_papers(state.recent_papers),
+                    active_papers=self._serialize_papers(state.active_papers),
+                    last_intent=state.last_intent,
+                    last_query=state.last_query,
+                )
+                repo.upsert_summary(
+                    session_id=conversation.id,
+                    summary=state.summary,
+                    source_message_count=message_count,
+                )
+                return FeishuConversationState(
+                    recent_papers=state.recent_papers,
+                    active_papers=state.active_papers,
+                    last_intent=state.last_intent,
+                    last_query=state.last_query,
+                    summary=state.summary,
+                    recent_messages=persisted_recent_messages or state.recent_messages,
+                    persisted_message_count=message_count,
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to persist Feishu conversation memory to PostgreSQL: {exc}")
+            return state
 
     def _classify_intent(self, query: str, state: FeishuConversationState) -> FeishuIntentDecision:
         if self._is_reset_query(query):
@@ -698,6 +993,7 @@ class FeishuBot:
         return f"feishu:context:p2p:{context.sender_open_id or context.chat_id}"
 
     def _store_recent_papers(self, context: FeishuMessageContext, papers: list[FeishuPaperReference]) -> None:
+        previous_state = self._load_conversation_state(context)
         self._store_conversation_state(
             context,
             FeishuConversationState(
@@ -705,19 +1001,64 @@ class FeishuBot:
                 active_papers=papers,
                 last_intent=INTENT_PAPER_SEARCH,
                 last_query=context.query,
+                summary=previous_state.summary,
+                recent_messages=previous_state.recent_messages,
+                persisted_message_count=previous_state.persisted_message_count,
             ),
         )
 
     def _store_conversation_state(self, context: FeishuMessageContext, state: FeishuConversationState) -> None:
-        payload = json.dumps(
-            {
-                "recent_papers": [paper.__dict__ for paper in state.recent_papers],
-                "active_papers": [paper.__dict__ for paper in state.active_papers],
-                "last_intent": state.last_intent,
-                "last_query": state.last_query,
-            },
-            ensure_ascii=False,
-        )
+        persisted_state = state
+        if self.database:
+            persisted_state = self._persist_conversation_state_to_database(context, state)
+
+        self._write_cached_conversation_state(context, persisted_state)
+
+    def _persist_conversation_state_to_database(
+        self,
+        context: FeishuMessageContext,
+        state: FeishuConversationState,
+    ) -> FeishuConversationState:
+        try:
+            with self.database.get_session() as session:
+                repo = self._conversation_repository_factory(session)
+                conversation = repo.get_or_create_session(
+                    conversation_key=self._context_key(context),
+                    chat_id=context.chat_id,
+                    chat_type=context.chat_type,
+                    sender_open_id=context.sender_open_id,
+                    receive_id=context.receive_id,
+                    receive_id_type=context.receive_id_type,
+                )
+                repo.update_session_state(
+                    conversation,
+                    recent_papers=self._serialize_papers(state.recent_papers),
+                    active_papers=self._serialize_papers(state.active_papers),
+                    last_intent=state.last_intent,
+                    last_query=state.last_query,
+                )
+                message_count = repo.count_messages(conversation.id)
+                if state.summary or message_count:
+                    repo.upsert_summary(
+                        session_id=conversation.id,
+                        summary=state.summary,
+                        source_message_count=message_count,
+                    )
+                return FeishuConversationState(
+                    recent_papers=state.recent_papers,
+                    active_papers=state.active_papers,
+                    last_intent=state.last_intent,
+                    last_query=state.last_query,
+                    summary=state.summary,
+                    recent_messages=state.recent_messages,
+                    persisted_message_count=message_count or state.persisted_message_count,
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to persist Feishu conversation state to PostgreSQL: {exc}")
+            return state
+
+    def _write_cached_conversation_state(self, context: FeishuMessageContext, state: FeishuConversationState) -> None:
+        payload = self._conversation_state_to_json(state)
         key = self._context_key(context)
         expires_at = time.time() + self.feishu_settings.context_ttl_seconds
 
@@ -733,10 +1074,17 @@ class FeishuBot:
 
         if self.redis:
             self.redis.delete(key)
-            return
 
         with self._context_lock:
             self._memory_context.pop(key, None)
+
+        if self.database:
+            try:
+                with self.database.get_session() as session:
+                    repo = self._conversation_repository_factory(session)
+                    repo.clear_session_memory(key)
+            except Exception as exc:
+                logger.warning(f"Failed to clear Feishu conversation memory from PostgreSQL: {exc}")
 
     def _load_recent_papers(self, context: FeishuMessageContext) -> list[FeishuPaperReference]:
         return self._load_conversation_state(context).recent_papers
@@ -747,24 +1095,77 @@ class FeishuBot:
 
         if self.redis:
             payload = self.redis.get(key)
-        else:
-            with self._context_lock:
-                cached = self._memory_context.get(key)
-                if cached:
-                    expires_at, raw_payload = cached
-                    if expires_at >= time.time():
-                        payload = raw_payload
-                    else:
-                        self._memory_context.pop(key, None)
+        with self._context_lock:
+            cached = self._memory_context.get(key)
+            if not payload and cached:
+                expires_at, raw_payload = cached
+                if expires_at >= time.time():
+                    payload = raw_payload
+                else:
+                    self._memory_context.pop(key, None)
 
-        if not payload:
-            return FeishuConversationState(recent_papers=[], active_papers=[])
+        if payload:
+            parsed_state = self._conversation_state_from_json(payload)
+            if parsed_state:
+                return parsed_state
 
+        persisted_state = self._load_conversation_state_from_database(context)
+        if persisted_state:
+            self._write_cached_conversation_state(context, persisted_state)
+            return persisted_state
+
+        return FeishuConversationState(recent_papers=[], active_papers=[])
+
+    def _load_conversation_state_from_database(
+        self,
+        context: FeishuMessageContext,
+    ) -> Optional[FeishuConversationState]:
+        if not self.database:
+            return None
+
+        try:
+            with self.database.get_session() as session:
+                repo = self._conversation_repository_factory(session)
+                conversation = repo.get_session_by_key(self._context_key(context))
+                if not conversation:
+                    return None
+
+                recent_messages = self._turns_from_stored_messages(
+                    repo.get_recent_messages(conversation.id, RECENT_MESSAGE_LIMIT)
+                )
+                return FeishuConversationState(
+                    recent_papers=self._deserialize_papers(conversation.recent_papers or []),
+                    active_papers=self._deserialize_papers(conversation.active_papers or []),
+                    last_intent=conversation.last_intent or "",
+                    last_query=conversation.last_query or "",
+                    summary=repo.get_summary(conversation.id),
+                    recent_messages=recent_messages,
+                    persisted_message_count=repo.count_messages(conversation.id),
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to load Feishu conversation memory from PostgreSQL: {exc}")
+            return None
+
+    def _conversation_state_to_json(self, state: FeishuConversationState) -> str:
+        return json.dumps(
+            {
+                "recent_papers": self._serialize_papers(state.recent_papers),
+                "active_papers": self._serialize_papers(state.active_papers),
+                "last_intent": state.last_intent,
+                "last_query": state.last_query,
+                "summary": state.summary,
+                "recent_messages": self._serialize_messages(state.recent_messages),
+                "persisted_message_count": state.persisted_message_count,
+            },
+            ensure_ascii=False,
+        )
+
+    def _conversation_state_from_json(self, payload: str) -> Optional[FeishuConversationState]:
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
-            logger.warning("Failed to decode stored Feishu paper context")
-            return FeishuConversationState(recent_papers=[], active_papers=[])
+            logger.warning("Failed to decode stored Feishu conversation context")
+            return None
 
         if isinstance(data, list):
             papers = self._deserialize_papers(data)
@@ -780,7 +1181,14 @@ class FeishuBot:
             active_papers=active_papers,
             last_intent=str(data.get("last_intent", "") or ""),
             last_query=str(data.get("last_query", "") or ""),
+            summary=str(data.get("summary", "") or ""),
+            recent_messages=self._deserialize_messages(data.get("recent_messages", [])),
+            persisted_message_count=int(data.get("persisted_message_count") or 0),
         )
+
+    @staticmethod
+    def _serialize_papers(papers: list[FeishuPaperReference]) -> list[dict[str, str]]:
+        return [paper.__dict__ for paper in papers]
 
     @staticmethod
     def _deserialize_papers(items: list[dict[str, Any]]) -> list[FeishuPaperReference]:
@@ -799,6 +1207,76 @@ class FeishuBot:
                 )
             )
         return papers
+
+    @staticmethod
+    def _serialize_messages(messages: list[FeishuConversationTurn]) -> list[dict[str, str]]:
+        return [message.__dict__ for message in messages]
+
+    @staticmethod
+    def _deserialize_messages(items: list[dict[str, Any]]) -> list[FeishuConversationTurn]:
+        messages: list[FeishuConversationTurn] = []
+        for item in items:
+            content = str(item.get("content", "") or "").strip()
+            role = str(item.get("role", "") or "").strip()
+            if not role or not content:
+                continue
+            messages.append(
+                FeishuConversationTurn(
+                    role=role,
+                    content=content,
+                    intent=str(item.get("intent", "") or ""),
+                    message_id=str(item.get("message_id", "") or ""),
+                    created_at=str(item.get("created_at", "") or ""),
+                )
+            )
+        return messages
+
+    @staticmethod
+    def _turns_from_stored_messages(messages: list[StoredConversationMessage]) -> list[FeishuConversationTurn]:
+        return [
+            FeishuConversationTurn(
+                role=message.role,
+                content=message.content,
+                intent=message.intent,
+                message_id=message.message_id,
+                created_at=message.created_at,
+            )
+            for message in messages
+        ]
+
+    def _format_recent_messages_for_prompt(self, messages: list[FeishuConversationTurn]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            label = "用户" if message.role == "user" else "助手"
+            lines.append(f"{label}: {self._truncate(message.content, 180)}")
+        return "\n".join(lines)
+
+    def _build_conversation_summary(
+        self,
+        previous_summary: str,
+        recent_messages: list[FeishuConversationTurn],
+    ) -> str:
+        lines: list[str] = []
+        if previous_summary:
+            lines.append(previous_summary.strip())
+        for message in recent_messages[-6:]:
+            label = "用户" if message.role == "user" else "助手"
+            lines.append(f"{label}: {self._truncate(message.content, 220)}")
+
+        summary = "\n".join(line for line in lines if line).strip()
+        return self._truncate_from_left(summary, SUMMARY_MAX_CHARS)
+
+    @staticmethod
+    def _truncate(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    @staticmethod
+    def _truncate_from_left(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return "..." + text[-(max_chars - 3) :].lstrip()
 
     def _send_text_message(self, receive_id: str, receive_id_type: str, text: str) -> None:
         """Send a plain text reply back to Feishu."""

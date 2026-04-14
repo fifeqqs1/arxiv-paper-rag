@@ -182,6 +182,9 @@ class FeishuSettings(BaseConfigSettings):
     source_limit: int = 3
     dedupe_ttl_seconds: int = 3600
     context_ttl_seconds: int = 3600
+    conversation_max_messages: int = 100
+    memory_cleanup_hour: int = 0
+    memory_cleanup_minute: int = 0
     auto_ingest_enabled: bool = True
     auto_ingest_max_results: int = 6
     auto_ingest_process_pdfs: bool = True

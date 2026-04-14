@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from src.config import get_settings
+from src.db.factory import make_database
 from src.services.cache.factory import make_redis_client
 from src.services.feishu.bot import FeishuBot
 
@@ -26,4 +27,10 @@ def make_feishu_bot() -> Optional[FeishuBot]:
     except Exception as exc:
         logger.warning(f"Feishu bot will start without Redis dedupe: {exc}")
 
-    return FeishuBot(settings=settings, redis_client=redis_client)
+    database = None
+    try:
+        database = make_database()
+    except Exception as exc:
+        logger.warning(f"Feishu bot will start without PostgreSQL conversation memory: {exc}")
+
+    return FeishuBot(settings=settings, redis_client=redis_client, database=database)

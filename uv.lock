@@ -188,6 +188,107 @@ wheels = [
 ]
 
 [[package]]
+name = "arxiv-paper-rag"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "docling" },
+    { name = "fastapi", extra = ["standard"] },
+    { name = "gradio" },
+    { name = "httpx" },
+    { name = "langchain" },
+    { name = "langchain-community" },
+    { name = "langchain-core" },
+    { name = "langchain-ollama" },
+    { name = "langfuse" },
+    { name = "langgraph" },
+    { name = "lark-oapi" },
+    { name = "opensearch-py" },
+    { name = "psycopg2-binary" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dateutil" },
+    { name = "python-telegram-bot" },
+    { name = "redis" },
+    { name = "requests" },
+    { name = "sentence-transformers" },
+    { name = "sqlalchemy" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "anyio", extra = ["trio"] },
+    { name = "asgi-lifespan" },
+    { name = "jupyter" },
+    { name = "mypy" },
+    { name = "notebook" },
+    { name = "polyfactory" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-aiohttp" },
+    { name = "pytest-cov" },
+    { name = "pytest-dotenv" },
+    { name = "pytest-env" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+    { name = "testcontainers" },
+    { name = "types-sqlalchemy" },
+]
+viz = [
+    { name = "grandalf" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.13.3" },
+    { name = "docling", specifier = ">=2.43.0" },
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.115.12" },
+    { name = "gradio", specifier = ">=4.0.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain", specifier = ">=0.3.0" },
+    { name = "langchain-community", specifier = ">=0.3.0" },
+    { name = "langchain-core", specifier = ">=0.3.0" },
+    { name = "langchain-ollama", specifier = ">=0.3.0" },
+    { name = "langfuse", specifier = ">=3.0.0" },
+    { name = "langgraph", specifier = ">=0.2.0" },
+    { name = "lark-oapi", specifier = ">=1.4.19,<2.0.0" },
+    { name = "opensearch-py", specifier = ">=3.0.0" },
+    { name = "psycopg2-binary", specifier = ">=2.9.10" },
+    { name = "pydantic", specifier = ">=2.11.3" },
+    { name = "pydantic-settings", specifier = ">=2.8.1" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
+    { name = "python-telegram-bot", specifier = ">=21.0,<22.0" },
+    { name = "redis", specifier = ">=6.4.0" },
+    { name = "requests", specifier = ">=2.32.3" },
+    { name = "sentence-transformers", specifier = ">=5.1.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.0" },
+    { name = "uvicorn", specifier = ">=0.34.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anyio", extras = ["trio"], specifier = ">=4.9.0" },
+    { name = "asgi-lifespan", specifier = ">=2.1.0" },
+    { name = "jupyter", specifier = ">=1.1.1" },
+    { name = "mypy", specifier = ">=1.15.0" },
+    { name = "notebook", specifier = ">=7.4.4" },
+    { name = "polyfactory", specifier = ">=2.21.0" },
+    { name = "pre-commit", specifier = ">=4.2.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-aiohttp", specifier = ">=1.1.0" },
+    { name = "pytest-cov", specifier = ">=6.1.1" },
+    { name = "pytest-dotenv", specifier = ">=0.5.2" },
+    { name = "pytest-env", specifier = ">=1.1.5" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "ruff", specifier = ">=0.11.5" },
+    { name = "testcontainers", specifier = ">=4.10.0" },
+    { name = "types-sqlalchemy", specifier = ">=1.4.53.38" },
+]
+viz = [{ name = "grandalf", specifier = ">=0.8" }]
+
+[[package]]
 name = "asgi-lifespan"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1873,107 +1974,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d7/02/a7fb8b21d4d55ac93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7a/f0/8282d9641415e9e33df173516226b404d367a0fc55e1a60424a152913abc/mistune-3.1.4-py3-none-any.whl", hash = "sha256:93691da911e5d9d2e23bc54472892aff676df27a75274962ff9edc210364266d", size = 53481, upload-time = "2025-08-29T07:20:42.218Z" },
 ]
-
-[[package]]
-name = "moai-zero-to-rag"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "docling" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "gradio" },
-    { name = "httpx" },
-    { name = "langchain" },
-    { name = "langchain-community" },
-    { name = "langchain-core" },
-    { name = "langchain-ollama" },
-    { name = "langfuse" },
-    { name = "langgraph" },
-    { name = "lark-oapi" },
-    { name = "opensearch-py" },
-    { name = "psycopg2-binary" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-dateutil" },
-    { name = "python-telegram-bot" },
-    { name = "redis" },
-    { name = "requests" },
-    { name = "sentence-transformers" },
-    { name = "sqlalchemy" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "anyio", extra = ["trio"] },
-    { name = "asgi-lifespan" },
-    { name = "jupyter" },
-    { name = "mypy" },
-    { name = "notebook" },
-    { name = "polyfactory" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-aiohttp" },
-    { name = "pytest-cov" },
-    { name = "pytest-dotenv" },
-    { name = "pytest-env" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-    { name = "testcontainers" },
-    { name = "types-sqlalchemy" },
-]
-viz = [
-    { name = "grandalf" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.13.3" },
-    { name = "docling", specifier = ">=2.43.0" },
-    { name = "fastapi", extras = ["standard"], specifier = ">=0.115.12" },
-    { name = "gradio", specifier = ">=4.0.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "langchain", specifier = ">=0.3.0" },
-    { name = "langchain-community", specifier = ">=0.3.0" },
-    { name = "langchain-core", specifier = ">=0.3.0" },
-    { name = "langchain-ollama", specifier = ">=0.3.0" },
-    { name = "langfuse", specifier = ">=3.0.0" },
-    { name = "langgraph", specifier = ">=0.2.0" },
-    { name = "lark-oapi", specifier = ">=1.4.19,<2.0.0" },
-    { name = "opensearch-py", specifier = ">=3.0.0" },
-    { name = "psycopg2-binary", specifier = ">=2.9.10" },
-    { name = "pydantic", specifier = ">=2.11.3" },
-    { name = "pydantic-settings", specifier = ">=2.8.1" },
-    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
-    { name = "python-telegram-bot", specifier = ">=21.0,<22.0" },
-    { name = "redis", specifier = ">=6.4.0" },
-    { name = "requests", specifier = ">=2.32.3" },
-    { name = "sentence-transformers", specifier = ">=5.1.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.0" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anyio", extras = ["trio"], specifier = ">=4.9.0" },
-    { name = "asgi-lifespan", specifier = ">=2.1.0" },
-    { name = "jupyter", specifier = ">=1.1.1" },
-    { name = "mypy", specifier = ">=1.15.0" },
-    { name = "notebook", specifier = ">=7.4.4" },
-    { name = "polyfactory", specifier = ">=2.21.0" },
-    { name = "pre-commit", specifier = ">=4.2.0" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-aiohttp", specifier = ">=1.1.0" },
-    { name = "pytest-cov", specifier = ">=6.1.1" },
-    { name = "pytest-dotenv", specifier = ">=0.5.2" },
-    { name = "pytest-env", specifier = ">=1.1.5" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "ruff", specifier = ">=0.11.5" },
-    { name = "testcontainers", specifier = ">=4.10.0" },
-    { name = "types-sqlalchemy", specifier = ">=1.4.53.38" },
-]
-viz = [{ name = "grandalf", specifier = ">=0.8" }]
 
 [[package]]
 name = "mpire"
