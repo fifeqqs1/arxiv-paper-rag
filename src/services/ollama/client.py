@@ -29,8 +29,7 @@ class OllamaClient:
     def _resolve_provider(self, provider: Optional[str] = None) -> str:
         resolved = self.settings.resolve_llm_provider(provider)
         if resolved == "qwen_api" and not self.qwen_api_key:
-            logger.warning("Qwen API provider requested but QWEN_API_KEY is empty, falling back to Ollama")
-            return "ollama"
+            raise OllamaConnectionError("QWEN_API_KEY is not configured for qwen_api provider")
         return resolved
 
     def _resolve_model(self, provider: Optional[str], model: str) -> str:
@@ -185,10 +184,29 @@ class OllamaClient:
                         yield {"done": True, "done_reason": choice.get("finish_reason")}
                         break
 
+    def _build_ollama_payload(self, model: str, prompt: str, stream: bool, **kwargs) -> Dict[str, Any]:
+        """Build a local Ollama generation payload.
+
+        Qwen3 models can spend the whole output budget in Ollama's `thinking`
+        field before producing final text. Feishu needs concise final answers,
+        so local Ollama calls disable thinking by default.
+        """
+        options = dict(kwargs.pop("options", {}) or {})
+        options.setdefault("num_gpu", self.settings.ollama_num_gpu)
+
+        return {
+            "model": model,
+            "prompt": prompt,
+            "stream": stream,
+            "think": False,
+            "options": options,
+            **kwargs,
+        }
+
     def get_langchain_model(self, model: str, temperature: float = 0.0, **kwargs) -> ChatOllama:
         """Return a LangChain-compatible Ollama chat model for agentic workflows."""
-        if self._resolve_provider() != "ollama":
-            raise OllamaException("LangChain model adapter is only available for the Ollama provider")
+        kwargs.setdefault("num_gpu", self.settings.ollama_num_gpu)
+        kwargs.setdefault("reasoning", False)
         return ChatOllama(
             base_url=self.base_url,
             model=model,
@@ -207,7 +225,7 @@ class OllamaClient:
             if self._resolve_provider() == "qwen_api":
                 return await self._qwen_health_check()
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
                 # Check version endpoint for health
                 response = await client.get(f"{self.base_url}/api/version")
 
@@ -241,7 +259,7 @@ class OllamaClient:
             if self._resolve_provider() == "qwen_api":
                 return await self._qwen_list_models()
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
                 response = await client.get(f"{self.base_url}/api/tags")
 
                 if response.status_code == 200:
@@ -290,8 +308,8 @@ class OllamaClient:
             if resolved_provider == "qwen_api":
                 return await self._qwen_generate(model=resolved_model, prompt=prompt, stream=stream, **kwargs)
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                data = {"model": resolved_model, "prompt": prompt, "stream": stream, **kwargs}
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+                data = self._build_ollama_payload(resolved_model, prompt, stream, **kwargs)
 
                 logger.info(
                     f"Sending request to Ollama: model={resolved_model}, stream={stream}, extra_params={kwargs}"
@@ -367,8 +385,8 @@ class OllamaClient:
                     yield chunk
                 return
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                data = {"model": resolved_model, "prompt": prompt, "stream": True, **kwargs}
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+                data = self._build_ollama_payload(resolved_model, prompt, True, **kwargs)
 
                 logger.info(f"Starting streaming generation: model={resolved_model}")
 

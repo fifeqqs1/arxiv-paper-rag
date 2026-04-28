@@ -8,7 +8,7 @@ from langgraph.runtime import Runtime
 from ..context import Context
 from ..models import SourceItem
 from ..state import AgentState
-from .utils import get_latest_query
+from .utils import get_latest_context, get_latest_query, parse_retrieved_hits
 
 logger = logging.getLogger(__name__)
 
@@ -56,20 +56,17 @@ async def ainvoke_generate_answer_step(
             logger.warning(f"Failed to create span for generate_answer node: {e}")
 
     try:
-        query_embedding = None
-        try:
-            query_embedding = await runtime.context.embeddings_client.embed_query(retrieval_query)
-        except Exception as exc:
-            logger.warning(f"Failed to generate embedding in generate_answer node, falling back to BM25: {exc}")
+        hits = state.get("retrieved_hits") or parse_retrieved_hits(state["messages"])
+        if hits:
+            logger.debug("Reusing %s retrieved hits from prior agentic step", len(hits))
+        else:
+            fallback_context = get_latest_context(state["messages"]).strip()
+            if fallback_context:
+                hits = [{"chunk_text": fallback_context}]
+                logger.debug("Using latest tool-message context as a fallback chunk")
+            else:
+                logger.warning("No reusable hits found in agent state; answer generation will proceed without chunks")
 
-        search_results = runtime.context.opensearch_client.search_unified(
-            query=retrieval_query,
-            query_embedding=query_embedding,
-            size=runtime.context.top_k,
-            use_hybrid=query_embedding is not None,
-        )
-
-        hits = search_results.get("hits", [])
         chunks = []
         relevant_sources: List[SourceItem] = []
         seen_urls = set()
@@ -78,7 +75,15 @@ async def ainvoke_generate_answer_step(
         for hit in hits:
             arxiv_id = hit.get("arxiv_id", "")
             chunk_text = hit.get("chunk_text", hit.get("abstract", ""))
-            chunks.append({"arxiv_id": arxiv_id, "chunk_text": chunk_text})
+            chunks.append(
+                {
+                    "arxiv_id": arxiv_id,
+                    "chunk_text": chunk_text,
+                    "section_title": hit.get("section_title", hit.get("section_name", "")),
+                    "section_path": hit.get("section_path", []) or [],
+                    "section_type": hit.get("section_type", ""),
+                }
+            )
 
             if chunk_text and len(chunks_preview) < 3:
                 preview = chunk_text[:500] + "..." if len(chunk_text) > 500 else chunk_text
@@ -155,5 +160,6 @@ async def ainvoke_generate_answer_step(
 
     return {
         "messages": [AIMessage(content=answer)],
+        "retrieved_hits": hits if 'hits' in locals() else [],
         "relevant_sources": relevant_sources if 'relevant_sources' in locals() else [],
     }

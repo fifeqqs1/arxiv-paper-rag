@@ -67,5 +67,6 @@ class AgentState(TypedDict):
     sources: Optional[Dict[str, Any]]
     relevant_sources: List[SourceItem]
     relevant_tool_artefacts: Optional[List[ToolArtefact]]
+    retrieved_hits: List[Dict[str, Any]]
     grading_results: List[GradingResult]
     metadata: Dict[str, Any]

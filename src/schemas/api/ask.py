@@ -9,8 +9,8 @@ class AskRequest(BaseModel):
     query: str = Field(..., description="User's question", min_length=1, max_length=1000)
     top_k: int = Field(3, description="Number of top chunks to retrieve", ge=1, le=10)
     use_hybrid: bool = Field(True, description="Use hybrid search (BM25 + vector)")
-    provider: str = Field("ollama", description="LLM provider to use: ollama or qwen_api")
-    model: str = Field("qwen2.5:7b", description="Ollama model to use for generation")
+    provider: str = Field("qwen_api", description="LLM provider to use: ollama or qwen_api")
+    model: str = Field("qwen3.5-plus", description="Model to use for generation")
     arxiv_ids: Optional[List[str]] = Field(None, description="Restrict answering to specific arXiv IDs")
     direct_chunks_per_paper: Optional[int] = Field(
         None,
@@ -19,6 +19,7 @@ class AskRequest(BaseModel):
         le=40,
     )
     categories: Optional[List[str]] = Field(None, description="Filter by arXiv categories")
+    include_contexts: bool = Field(False, description="Include retrieved contexts in the response for evaluation/debugging")
 
     class Config:
         json_schema_extra = {
@@ -26,8 +27,8 @@ class AskRequest(BaseModel):
                 "query": "What are transformers in machine learning?",
                 "top_k": 3,
                 "use_hybrid": True,
-                "provider": "ollama",
-                "model": "qwen2.5:7b",
+                "provider": "qwen_api",
+                "model": "qwen3.5-plus",
                 "arxiv_ids": ["1706.03762v5"],
                 "direct_chunks_per_paper": 24,
                 "categories": ["cs.AI", "cs.LG"],
@@ -43,6 +44,7 @@ class AskResponse(BaseModel):
     sources: List[str] = Field(..., description="PDF URLs of source papers")
     chunks_used: int = Field(..., description="Number of chunks used for generation")
     search_mode: str = Field(..., description="Search mode used: bm25 or hybrid")
+    contexts: Optional[List[str]] = Field(None, description="Retrieved chunk texts used for evaluation/debugging")
 
     class Config:
         json_schema_extra = {

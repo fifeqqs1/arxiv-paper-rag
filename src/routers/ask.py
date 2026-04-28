@@ -8,14 +8,50 @@ from fastapi.responses import StreamingResponse
 from src.dependencies import CacheDep, EmbeddingsDep, LangfuseDep, OllamaDep, OpenSearchDep
 from src.schemas.api.ask import AskRequest, AskResponse
 from src.services.langfuse.tracer import RAGTracer
+from src.services.retrieval import (
+    Reranker,
+    build_retrieval_plan,
+)
+from src.services.retrieval import (
+    candidate_size as retrieval_candidate_size,
+)
 
 logger = logging.getLogger(__name__)
 
 DIRECT_ARXIV_CHUNKS_PER_PAPER = 6
+DEFAULT_RETRIEVAL_MAX_SUBQUERIES = 4
 
 # Two separate routers - one for regular ask, one for streaming
 ask_router = APIRouter(tags=["ask"])
 stream_router = APIRouter(tags=["stream"])
+
+
+def _candidate_size(request: AskRequest, opensearch_client) -> int:
+    return retrieval_candidate_size(request.top_k, getattr(opensearch_client, "settings", None))
+
+
+def _hit_to_prompt_chunk(hit: Dict, default_arxiv_id: str = "") -> Dict:
+    return {
+        "arxiv_id": hit.get("arxiv_id", default_arxiv_id),
+        "chunk_text": hit.get("chunk_text", hit.get("abstract", "")),
+        "section_title": hit.get("section_title", hit.get("section_name", "")),
+        "section_path": hit.get("section_path", []) or [],
+        "section_type": hit.get("section_type", ""),
+        "chunk_id": hit.get("chunk_id", ""),
+    }
+
+
+def _sources_from_hits(hits: List[Dict]) -> tuple[list[str], list[str]]:
+    arxiv_ids = []
+    sources_set = set()
+    for hit in hits:
+        arxiv_id = hit.get("arxiv_id", "")
+        if not arxiv_id:
+            continue
+        arxiv_ids.append(arxiv_id)
+        arxiv_id_clean = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
+        sources_set.add(f"https://arxiv.org/pdf/{arxiv_id_clean}.pdf")
+    return list(sources_set), arxiv_ids
 
 
 async def _prepare_chunks_and_sources(
@@ -26,56 +62,64 @@ async def _prepare_chunks_and_sources(
     trace=None,
 ) -> tuple[List[Dict], List[str], List[str]]:
     """Retrieve and prepare chunks for RAG with clean tracing."""
+    settings = getattr(opensearch_client, "settings", None)
+    plan = build_retrieval_plan(
+        request.query,
+        max_subqueries=int(getattr(settings, "retrieval_max_subqueries", DEFAULT_RETRIEVAL_MAX_SUBQUERIES)),
+        section_aware=bool(getattr(settings, "retrieval_section_aware", True)),
+    )
+    candidate_size = _candidate_size(request, opensearch_client)
+    reranker = Reranker()
+    all_hits: list[Dict] = []
 
-    # Handle embeddings for hybrid search
-    query_embedding = None
-    if request.use_hybrid:
-        with rag_tracer.trace_embedding(trace, request.query) as embedding_span:
-            try:
-                query_embedding = await embeddings_service.embed_query(request.query)
-                logger.info("Generated query embedding for hybrid search")
-            except Exception as e:
-                logger.warning(f"Failed to generate embeddings, falling back to BM25: {e}")
-                if embedding_span:
-                    rag_tracer.tracer.update_span(embedding_span, output={"success": False, "error": str(e)})
-
-    # Search with tracing
+    # Search with tracing. Complex questions search multiple lightweight subqueries.
     with rag_tracer.trace_search(trace, request.query, request.top_k) as search_span:
-        search_results = opensearch_client.search_unified(
-            query=request.query,
-            query_embedding=query_embedding,
-            size=request.top_k,
-            from_=0,
-            categories=request.categories,
-            use_hybrid=request.use_hybrid and query_embedding is not None,
-            min_score=0.0,
-        )
+        total_hits = 0
+        for subquery in plan.subqueries:
+            query_embedding = None
+            if request.use_hybrid:
+                with rag_tracer.trace_embedding(trace, subquery) as embedding_span:
+                    try:
+                        query_embedding = await embeddings_service.embed_query(subquery)
+                        logger.info("Generated query embedding for retrieval subquery")
+                    except Exception as e:
+                        logger.warning(f"Failed to generate embeddings, falling back to BM25: {e}")
+                        if embedding_span:
+                            rag_tracer.tracer.update_span(embedding_span, output={"success": False, "error": str(e)})
 
-        # Extract essential data for LLM
-        chunks = []
-        arxiv_ids = []
-        sources_set = set()
-
-        for hit in search_results.get("hits", []):
-            arxiv_id = hit.get("arxiv_id", "")
-
-            # Minimal chunk data for LLM
-            chunks.append(
-                {
-                    "arxiv_id": arxiv_id,
-                    "chunk_text": hit.get("chunk_text", hit.get("abstract", "")),
-                }
+            search_results = opensearch_client.search_unified(
+                query=subquery,
+                query_embedding=query_embedding,
+                size=candidate_size,
+                from_=0,
+                categories=request.categories,
+                use_hybrid=request.use_hybrid and query_embedding is not None,
+                min_score=0.0,
+                section_types=plan.section_types,
             )
+            hits = search_results.get("hits", [])
+            for hit in hits:
+                hit["retrieval_subquery"] = subquery
+            all_hits.extend(hits)
+            total_hits += search_results.get("total", len(hits))
 
-            if arxiv_id:
-                arxiv_ids.append(arxiv_id)
-                arxiv_id_clean = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
-                sources_set.add(f"https://arxiv.org/pdf/{arxiv_id_clean}.pdf")
+        if bool(getattr(settings, "retrieval_rerank_enabled", True)):
+            selected_hits = reranker.rerank(
+                query=request.query,
+                hits=all_hits,
+                top_k=request.top_k,
+                section_types=plan.section_types,
+                subqueries=plan.subqueries,
+            )
+        else:
+            selected_hits = all_hits[: request.top_k]
 
+        chunks = [_hit_to_prompt_chunk(hit) for hit in selected_hits]
+        sources, arxiv_ids = _sources_from_hits(selected_hits)
         # End search span with essential metadata
-        rag_tracer.end_search(search_span, chunks, arxiv_ids, search_results.get("total", 0))
+        rag_tracer.end_search(search_span, chunks, arxiv_ids, total_hits)
 
-    return chunks, list(sources_set), arxiv_ids
+    return chunks, sources, arxiv_ids
 
 
 async def _prepare_chunks_from_arxiv_ids(
@@ -91,6 +135,13 @@ async def _prepare_chunks_from_arxiv_ids(
     chunk_limit = request.direct_chunks_per_paper or DIRECT_ARXIV_CHUNKS_PER_PAPER
     sources_set = set()
     loaded_arxiv_ids = []
+    settings = getattr(opensearch_client, "settings", None)
+    plan = build_retrieval_plan(
+        request.query,
+        max_subqueries=int(getattr(settings, "retrieval_max_subqueries", DEFAULT_RETRIEVAL_MAX_SUBQUERIES)),
+        section_aware=bool(getattr(settings, "retrieval_section_aware", True)),
+    )
+    reranker = Reranker()
 
     with rag_tracer.trace_search(trace, request.query, request.top_k) as search_span:
         for requested_arxiv_id in requested_arxiv_ids:
@@ -103,20 +154,26 @@ async def _prepare_chunks_from_arxiv_ids(
             clean_id = requested_arxiv_id.split("v")[0] if "v" in requested_arxiv_id else requested_arxiv_id
             sources_set.add(f"https://arxiv.org/pdf/{clean_id}.pdf")
 
-            for hit in paper_chunks[:chunk_limit]:
-                chunks.append(
-                    {
-                        "arxiv_id": hit.get("arxiv_id", requested_arxiv_id),
-                        "chunk_text": hit.get("chunk_text", hit.get("abstract", "")),
-                    }
+            if bool(getattr(settings, "retrieval_rerank_enabled", True)):
+                selected_chunks = reranker.rerank(
+                    query=request.query,
+                    hits=paper_chunks,
+                    top_k=chunk_limit,
+                    section_types=plan.section_types,
+                    subqueries=plan.subqueries,
                 )
+            else:
+                selected_chunks = paper_chunks[:chunk_limit]
+
+            for hit in selected_chunks:
+                chunks.append(_hit_to_prompt_chunk(hit, default_arxiv_id=requested_arxiv_id))
 
         rag_tracer.end_search(search_span, chunks, loaded_arxiv_ids, len(chunks))
 
     return chunks, list(sources_set), loaded_arxiv_ids
 
 
-@ask_router.post("/ask", response_model=AskResponse)
+@ask_router.post("/ask", response_model=AskResponse, response_model_exclude_none=True)
 async def ask_question(
     request: AskRequest,
     opensearch_client: OpenSearchDep,
@@ -166,6 +223,7 @@ async def ask_question(
                     sources=[],
                     chunks_used=0,
                     search_mode="direct" if request.arxiv_ids else ("bm25" if not request.use_hybrid else "hybrid"),
+                    contexts=[] if request.include_contexts else None,
                 )
                 rag_tracer.end_request(trace, response.answer, time.time() - start_time)
                 return response
@@ -202,6 +260,7 @@ async def ask_question(
                 sources=sources,
                 chunks_used=len(chunks),
                 search_mode="direct" if request.arxiv_ids else ("bm25" if not request.use_hybrid else "hybrid"),
+                contexts=[chunk.get("chunk_text", "") for chunk in chunks] if request.include_contexts else None,
             )
 
             rag_tracer.end_request(trace, answer, time.time() - start_time)

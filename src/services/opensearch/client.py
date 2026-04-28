@@ -82,12 +82,29 @@ class OpenSearchClient:
                 logger.info(f"Created hybrid index: {self.index_name}")
                 return True
 
+            self._ensure_chunk_metadata_mapping()
             logger.info(f"Hybrid index already exists: {self.index_name}")
             return False
 
         except Exception as e:
             logger.error(f"Error creating hybrid index: {e}")
             raise
+
+    def _ensure_chunk_metadata_mapping(self) -> None:
+        """Add newer optional chunk metadata fields to existing indexes."""
+        try:
+            self.client.indices.put_mapping(
+                index=self.index_name,
+                body={
+                    "properties": {
+                        "section_path": {"type": "keyword"},
+                        "section_level": {"type": "integer"},
+                        "section_type": {"type": "keyword"},
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Unable to update optional chunk metadata mapping: {e}")
 
     def _create_rrf_pipeline(self, force: bool = False) -> bool:
         """Create RRF search pipeline for native hybrid search.
@@ -183,6 +200,7 @@ class OpenSearchClient:
         latest: bool = False,
         use_hybrid: bool = True,
         min_score: float = 0.0,
+        section_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Unified search method supporting BM25, vector, and hybrid modes.
 
@@ -194,16 +212,29 @@ class OpenSearchClient:
         :param latest: Sort by date instead of relevance
         :param use_hybrid: If True and embedding provided, use hybrid search
         :param min_score: Minimum score threshold
+        :param section_types: Optional section types to boost
         :returns: Search results
         """
         try:
             # If no embedding provided or hybrid disabled, use BM25 only
             if not query_embedding or not use_hybrid:
-                return self._search_bm25_only(query=query, size=size, from_=from_, categories=categories, latest=latest)
+                return self._search_bm25_only(
+                    query=query,
+                    size=size,
+                    from_=from_,
+                    categories=categories,
+                    latest=latest,
+                    section_types=section_types,
+                )
 
             # Use native OpenSearch hybrid search with RRF pipeline
             return self._search_hybrid_native(
-                query=query, query_embedding=query_embedding, size=size, categories=categories, min_score=min_score
+                query=query,
+                query_embedding=query_embedding,
+                size=size,
+                categories=categories,
+                min_score=min_score,
+                section_types=section_types,
             )
 
         except Exception as e:
@@ -211,7 +242,13 @@ class OpenSearchClient:
             return {"total": 0, "hits": []}
 
     def _search_bm25_only(
-        self, query: str, size: int, from_: int, categories: Optional[List[str]], latest: bool
+        self,
+        query: str,
+        size: int,
+        from_: int,
+        categories: Optional[List[str]],
+        latest: bool,
+        section_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Pure BM25 search implementation."""
         builder = QueryBuilder(
@@ -221,6 +258,7 @@ class OpenSearchClient:
             categories=categories,
             latest_papers=latest,
             search_chunks=True,  # Enable chunk search mode
+            section_types=section_types,
         )
         search_body = builder.build()
 
@@ -242,11 +280,23 @@ class OpenSearchClient:
         return results
 
     def _search_hybrid_native(
-        self, query: str, query_embedding: List[float], size: int, categories: Optional[List[str]], min_score: float
+        self,
+        query: str,
+        query_embedding: List[float],
+        size: int,
+        categories: Optional[List[str]],
+        min_score: float,
+        section_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Native OpenSearch hybrid search with RRF pipeline."""
         builder = QueryBuilder(
-            query=query, size=size * 2, from_=0, categories=categories, latest_papers=False, search_chunks=True
+            query=query,
+            size=size * 2,
+            from_=0,
+            categories=categories,
+            latest_papers=False,
+            search_chunks=True,
+            section_types=section_types,
         )
         bm25_search_body = builder.build()
 
@@ -295,7 +345,11 @@ class OpenSearchClient:
     ) -> Dict[str, Any]:
         """Hybrid search combining BM25 and vector similarity using native RRF."""
         return self._search_hybrid_native(
-            query=query, query_embedding=query_embedding, size=size, categories=categories, min_score=min_score
+            query=query,
+            query_embedding=query_embedding,
+            size=size,
+            categories=categories,
+            min_score=min_score,
         )
 
     def index_chunk(self, chunk_data: Dict[str, Any], embedding: List[float]) -> bool:

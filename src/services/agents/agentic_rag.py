@@ -263,6 +263,7 @@ class AgenticRAGService:
                 model_name=model_to_use,
                 temperature=self.graph_config.temperature,
                 top_k=self.graph_config.top_k,
+                use_hybrid=self.graph_config.use_hybrid,
                 max_retrieval_attempts=self.graph_config.max_retrieval_attempts,
                 guardrail_threshold=self.graph_config.guardrail_threshold,
             )

@@ -60,6 +60,27 @@ async def ask_agentic(
         HTTPException: If processing fails
     """
     try:
+        if request.arxiv_ids:
+            logger.info("Agentic endpoint received arxiv_ids; routing directly to standard /ask pipeline")
+            fallback_response = await ask_question(
+                request=request,
+                opensearch_client=opensearch_client,
+                embeddings_service=embeddings_service,
+                ollama_client=ollama_client,
+                langfuse_tracer=langfuse_tracer,
+                cache_client=cache_client,
+            )
+            return AgenticAskResponse(
+                query=fallback_response.query,
+                answer=fallback_response.answer,
+                sources=fallback_response.sources,
+                chunks_used=fallback_response.chunks_used,
+                search_mode=fallback_response.search_mode,
+                reasoning_steps=["Direct paper-scoped query routed to standard RAG"],
+                retrieval_attempts=1,
+                trace_id=None,
+            )
+
         agentic_rag = make_agentic_rag_service(
             opensearch_client=opensearch_client,
             ollama_client=ollama_client,

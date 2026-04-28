@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 
+from src.config import get_settings
 from src.schemas.api.ask import AskRequest, AskResponse
 from src.schemas.api.search import HybridSearchRequest
 from telegram import Update
@@ -132,7 +133,10 @@ class TelegramBot:
 
         try:
             # Build request
-            ask_request = AskRequest(query=query, top_k=3, use_hybrid=True)
+            settings = get_settings()
+            provider = settings.resolve_llm_provider()
+            model = settings.resolve_llm_model(provider)
+            ask_request = AskRequest(query=query, top_k=3, use_hybrid=True, provider=provider, model=model)
 
             # Check cache
             if self.cache:
@@ -187,7 +191,12 @@ class TelegramBot:
 
             # Generate answer
             prompt = RAGPromptBuilder().create_rag_prompt(query=query, chunks=chunks)
-            ollama_response = await self.ollama.generate(model="qwen2.5:7b", prompt=prompt, stream=False)
+            ollama_response = await self.ollama.generate(
+                model=model,
+                prompt=prompt,
+                stream=False,
+                provider=provider,
+            )
             answer = ollama_response.get("response", "") if ollama_response else ""
 
             # Build response

@@ -48,9 +48,16 @@ class RAGPromptBuilder:
             # Get the actual chunk text
             chunk_text = chunk.get("chunk_text", chunk.get("content", ""))
             arxiv_id = chunk.get("arxiv_id", "")
+            section_path = chunk.get("section_path") or []
+            section_label = " > ".join(section_path) if section_path else chunk.get("section_title", "")
+            section_type = chunk.get("section_type", "")
 
-            # Only include minimal metadata - just arxiv_id for citation
             prompt += f"[{i}. arXiv:{arxiv_id}]\n"
+            if section_label or section_type:
+                prompt += f"Section: {section_label or 'Unknown'}"
+                if section_type:
+                    prompt += f" ({section_type})"
+                prompt += "\n"
             prompt += f"{chunk_text}\n\n"
 
         prompt += f"### Question:\n{query}\n\n"

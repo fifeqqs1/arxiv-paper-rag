@@ -111,15 +111,29 @@ class DoclingParser:
 
             # Extract sections from document structure
             sections = []
-            current_section = {"title": "Content", "content": ""}
+            current_section = {"title": "Content", "content": "", "level": 1}
 
             for element in doc.texts:
                 if hasattr(element, "label") and element.label in ["title", "section_header"]:
                     # Save previous section if it has content
                     if current_section["content"].strip():
-                        sections.append(PaperSection(title=current_section["title"], content=current_section["content"].strip()))
+                        sections.append(
+                            PaperSection(
+                                title=current_section["title"],
+                                content=current_section["content"].strip(),
+                                level=current_section["level"],
+                            )
+                        )
                     # Start new section
-                    current_section = {"title": element.text.strip(), "content": ""}
+                    try:
+                        section_level = int(getattr(element, "level", 1) or 1)
+                    except (TypeError, ValueError):
+                        section_level = 1
+                    current_section = {
+                        "title": element.text.strip(),
+                        "content": "",
+                        "level": section_level,
+                    }
                 else:
                     # Add content to current section
                     if hasattr(element, "text") and element.text:
@@ -127,7 +141,13 @@ class DoclingParser:
 
             # Add final section
             if current_section["content"].strip():
-                sections.append(PaperSection(title=current_section["title"], content=current_section["content"].strip()))
+                sections.append(
+                    PaperSection(
+                        title=current_section["title"],
+                        content=current_section["content"].strip(),
+                        level=current_section["level"],
+                    )
+                )
 
             # Focus on what arXiv API doesn't provide: structured full text content only
             return PdfContent(

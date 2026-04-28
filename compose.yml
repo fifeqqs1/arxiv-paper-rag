@@ -23,9 +23,9 @@ services:
       - .env
     environment:
       # Container-specific overrides
+      - FEISHU__API_BASE_URL=http://127.0.0.1:8000
       - OPENSEARCH_HOST=http://opensearch:9200
       - OPENSEARCH__HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - LANGFUSE_HOST=http://langfuse-web:3000 
       - LANGFUSE_DEBUG=true
@@ -42,12 +42,21 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
       - .env
     environment:
       - FEISHU__API_BASE_URL=http://api:8000
+      - FEISHU__LLM_PROVIDER=qwen_api
+      - FEISHU__MODEL=qwen3.5-plus
+      - OPENSEARCH_HOST=http://opensearch:9200
+      - OPENSEARCH__HOST=http://opensearch:9200
+      - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - REDIS__HOST=redis
     restart: on-failure
     networks:
@@ -136,7 +145,6 @@ services:
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_HOST=http://opensearch:9200
       - OPENSEARCH__HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
       - REDIS__HOST=redis
     volumes:
       - ./airflow/dags:/opt/airflow/dags
@@ -156,13 +164,19 @@ services:
       - rag-network
 
   ollama:
-    image: ollama/ollama:0.11.2
+    profiles:
+      - local-llm
+    image: ollama/ollama:0.5.13
     container_name: rag-ollama
+    runtime: nvidia
     ports:
       - "11435:11434"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_LLM_LIBRARY=cuda_v12
+      - OLLAMA_NUM_PARALLEL=1
+      - LD_LIBRARY_PATH=/usr/lib/ollama:/usr/lib/ollama/cuda_v12:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
       - ollama_data:/root/.ollama
     deploy:

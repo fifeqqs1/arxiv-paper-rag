@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Dict, List, Optional, TypeVar
+from typing import Any, Dict, List, Optional, TypeVar
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, ValidationError
@@ -109,6 +109,23 @@ def get_latest_context(messages: List) -> str:
             return msg.content if hasattr(msg, "content") else ""
 
     return ""
+
+
+def parse_retrieved_hits(messages: List) -> List[Dict[str, Any]]:
+    """Extract structured retrieval hits from tool messages when available."""
+    for msg in reversed(messages):
+        if not isinstance(msg, ToolMessage):
+            continue
+        raw_content = getattr(msg, "content", "")
+        if not isinstance(raw_content, str):
+            continue
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("hits"), list):
+            return [hit for hit in payload["hits"] if isinstance(hit, dict)]
+    return []
 
 
 def _extract_json_payload(raw_response: str) -> Dict:

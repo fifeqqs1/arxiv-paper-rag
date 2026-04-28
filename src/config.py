@@ -173,9 +173,9 @@ class FeishuSettings(BaseConfigSettings):
     app_id: str = ""
     app_secret: str = ""
     api_base_url: str = "http://localhost:8001"
-    ask_endpoint_path: str = "/api/v1/ask-agentic"
+    ask_endpoint_path: str = "/api/v1/ask"
     llm_provider: Literal["ollama", "qwen_api"] = "qwen_api"
-    request_timeout_seconds: int = 300
+    request_timeout_seconds: int = 90
     top_k: int = 3
     use_hybrid: bool = True
     model: str = ""
@@ -187,7 +187,14 @@ class FeishuSettings(BaseConfigSettings):
     memory_cleanup_minute: int = 0
     auto_ingest_enabled: bool = True
     auto_ingest_max_results: int = 6
-    auto_ingest_process_pdfs: bool = True
+    auto_ingest_process_pdfs: bool = False
+    worker_max_workers: int = 2
+    worker_queue_size: int = 4
+    http_max_retries: int = 1
+    http_retry_backoff_seconds: float = 0.5
+    message_chunk_chars: int = 3500
+    bot_open_id: str = ""
+    bot_name: str = ""
 
 
 class Settings(BaseConfigSettings):
@@ -204,11 +211,17 @@ class Settings(BaseConfigSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
     ollama_timeout: int = 300
+    ollama_num_gpu: int = -1
     qwen_api_key: str = ""
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model_name: str = "qwen3.5-plus"
     paper_retention_enabled: bool = True
     paper_retention_max_papers: int = 500
+    retrieval_candidate_multiplier: int = 4
+    retrieval_max_candidates: int = 50
+    retrieval_max_subqueries: int = 4
+    retrieval_rerank_enabled: bool = True
+    retrieval_section_aware: bool = True
 
     # Jina AI embeddings configuration
     jina_api_key: str = ""
@@ -230,7 +243,7 @@ class Settings(BaseConfigSettings):
         return v
 
     def resolve_llm_provider(self, provider: Optional[str] = None) -> Literal["ollama", "qwen_api"]:
-        normalized = (provider or "ollama").strip().lower()
+        normalized = (provider or "qwen_api").strip().lower()
         return "qwen_api" if normalized == "qwen_api" else "ollama"
 
     def resolve_llm_model(self, provider: Optional[str] = None, model: str = "") -> str:

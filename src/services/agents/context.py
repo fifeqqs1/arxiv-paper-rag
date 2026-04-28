@@ -33,9 +33,10 @@ class Context:
     langfuse_tracer: Optional[LangfuseTracer]
     trace: Optional["LangfuseSpan"] = None
     langfuse_enabled: bool = False
-    llm_provider: str = "ollama"
-    model_name: str = "qwen2.5:7b"
+    llm_provider: str = "qwen_api"
+    model_name: str = "qwen3.5-plus"
     temperature: float = 0.0
     top_k: int = 3
+    use_hybrid: bool = True
     max_retrieval_attempts: int = 2
     guardrail_threshold: int = 60

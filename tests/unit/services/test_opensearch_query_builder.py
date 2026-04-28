@@ -102,3 +102,12 @@ def test_query_builder_custom_fields():
 
     multi_match = query["query"]["bool"]["must"][0]["multi_match"]
     assert multi_match["fields"] == custom_fields
+
+
+def test_query_builder_boosts_section_type_for_chunk_search():
+    builder = QueryBuilder(query="baseline results", search_chunks=True, section_types=["experiment"])
+
+    query = builder.build()
+
+    should = query["query"]["bool"]["should"]
+    assert should == [{"term": {"section_type": {"value": "experiment", "boost": 3.0}}}]

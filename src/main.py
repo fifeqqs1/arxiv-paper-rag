@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from src.config import get_settings
 from src.db.factory import make_database
-from src.routers import agentic_ask, hybrid_search, ping
+from src.routers import agentic_ask, feishu_local, hybrid_search, ping
 from src.routers.ask import ask_router, stream_router
 from src.services.arxiv.factory import make_arxiv_client
 from src.services.cache.factory import make_cache_client
@@ -115,6 +115,7 @@ app.include_router(ping.router, prefix="/api/v1")  # Health check endpoint
 app.include_router(hybrid_search.router, prefix="/api/v1")  # Search chunks with BM25/hybrid
 app.include_router(ask_router, prefix="/api/v1")  # RAG question answering with LLM
 app.include_router(stream_router, prefix="/api/v1")  # Streaming RAG responses
+app.include_router(feishu_local.router, prefix="/api/v1")  # Local Feishu conversation logic
 app.include_router(agentic_ask.router)  # Agentic RAG with intelligent retrieval
 
 

@@ -21,6 +21,7 @@ class QueryBuilder:
         track_total_hits: bool = True,
         latest_papers: bool = False,
         search_chunks: bool = False,
+        section_types: Optional[List[str]] = None,
     ):
         """Initialize query builder.
 
@@ -32,6 +33,7 @@ class QueryBuilder:
         :param track_total_hits: Whether to track total hits accurately
         :param latest_papers: Sort by publication date instead of relevance
         :param search_chunks: Whether searching chunks (True) or papers (False)
+        :param section_types: Optional section types to boost when searching chunks
         """
         self.query = query
         self.size = size
@@ -40,6 +42,7 @@ class QueryBuilder:
         self.track_total_hits = track_total_hits
         self.latest_papers = latest_papers
         self.search_chunks = search_chunks
+        self.section_types = section_types or []
 
         if fields is None:
             if search_chunks:
@@ -91,6 +94,10 @@ class QueryBuilder:
         if filter_clauses:
             bool_query["filter"] = filter_clauses
 
+        should_clauses = self._build_section_boosts()
+        if should_clauses:
+            bool_query["should"] = should_clauses
+
         return {"bool": bool_query}
 
     def _build_text_query(self) -> Dict[str, Any]:
@@ -120,6 +127,15 @@ class QueryBuilder:
             filters.append({"terms": {"categories": self.categories}})
 
         return filters
+
+    def _build_section_boosts(self) -> List[Dict[str, Any]]:
+        if not self.search_chunks or not self.section_types:
+            return []
+
+        return [
+            {"term": {"section_type": {"value": section_type, "boost": 3.0}}}
+            for section_type in self.section_types
+        ]
 
     def _build_source_fields(self) -> Any:
         """Define which fields to return in results.

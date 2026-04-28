@@ -129,6 +129,134 @@ class FeishuConversationRepository:
         self.session.refresh(message)
         return message
 
+    def append_exchange_and_update_state(
+        self,
+        *,
+        conversation_key: str,
+        chat_id: str,
+        chat_type: str,
+        sender_open_id: str,
+        receive_id: str,
+        receive_id_type: str,
+        user_query: str,
+        assistant_reply: str,
+        intent: str,
+        message_id: str,
+        recent_papers: list[dict[str, Any]],
+        active_papers: list[dict[str, Any]],
+        last_intent: str,
+        last_query: str,
+        summary: str,
+        keep_latest: int,
+        recent_limit: int,
+    ) -> tuple[int, list[StoredConversationMessage]]:
+        """Append one user/assistant exchange, update state, and prune in one commit."""
+        now = utc_now()
+        conversation = self.session.scalar(
+            select(FeishuConversationSession).where(
+                FeishuConversationSession.conversation_key == conversation_key
+            )
+        )
+
+        if conversation:
+            conversation.chat_id = chat_id
+            conversation.chat_type = chat_type
+            conversation.sender_open_id = sender_open_id
+            conversation.receive_id = receive_id
+            conversation.receive_id_type = receive_id_type
+        else:
+            conversation = FeishuConversationSession(
+                conversation_key=conversation_key,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                sender_open_id=sender_open_id,
+                receive_id=receive_id,
+                receive_id_type=receive_id_type,
+                recent_papers=[],
+                active_papers=[],
+                created_at=now,
+            )
+
+        conversation.recent_papers = recent_papers
+        conversation.active_papers = active_papers
+        conversation.last_intent = last_intent
+        conversation.last_query = last_query
+        conversation.updated_at = now
+        conversation.last_seen_at = now
+        self.session.add(conversation)
+        self.session.flush()
+
+        self.session.add_all(
+            [
+                FeishuConversationMessage(
+                    session_id=conversation.id,
+                    role="user",
+                    content=user_query,
+                    intent=intent,
+                    message_id=message_id or None,
+                    message_metadata={"chat_type": chat_type},
+                ),
+                FeishuConversationMessage(
+                    session_id=conversation.id,
+                    role="assistant",
+                    content=assistant_reply,
+                    intent=intent,
+                    message_metadata={"receive_id_type": receive_id_type},
+                ),
+            ]
+        )
+        self.session.flush()
+
+        if keep_latest <= 0:
+            self.session.execute(
+                delete(FeishuConversationMessage).where(
+                    FeishuConversationMessage.session_id == conversation.id
+                )
+            )
+        else:
+            old_message_ids = list(
+                self.session.scalars(
+                    select(FeishuConversationMessage.id)
+                    .where(FeishuConversationMessage.session_id == conversation.id)
+                    .order_by(FeishuConversationMessage.created_at.desc())
+                    .offset(keep_latest)
+                )
+            )
+            if old_message_ids:
+                self.session.execute(
+                    delete(FeishuConversationMessage).where(
+                        FeishuConversationMessage.id.in_(old_message_ids)
+                    )
+                )
+
+        message_count = self.session.scalar(
+            select(func.count(FeishuConversationMessage.id)).where(
+                FeishuConversationMessage.session_id == conversation.id
+            )
+        ) or 0
+
+        summary_row = self.session.scalar(
+            select(FeishuConversationSummary).where(
+                FeishuConversationSummary.session_id == conversation.id
+            )
+        )
+        if summary_row:
+            summary_row.summary = summary
+            summary_row.source_message_count = message_count
+            summary_row.updated_at = now
+        else:
+            summary_row = FeishuConversationSummary(
+                session_id=conversation.id,
+                summary=summary,
+                source_message_count=message_count,
+                created_at=now,
+                updated_at=now,
+            )
+        self.session.add(summary_row)
+        self.session.commit()
+
+        return message_count, self.get_recent_messages(conversation.id, recent_limit)
+
     def get_recent_messages(self, session_id: UUID, limit: int = 12) -> list[StoredConversationMessage]:
         stmt = (
             select(FeishuConversationMessage)

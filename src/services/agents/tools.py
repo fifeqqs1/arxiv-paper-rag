@@ -1,9 +1,10 @@
+import json
 import logging
 
-from langchain_core.documents import Document
 from langchain_core.tools import tool
 from src.services.embeddings.jina_client import JinaEmbeddingsClient
 from src.services.opensearch.client import OpenSearchClient
+from src.services.retrieval import retrieve_relevant_hits
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def create_retriever_tool(
     """
 
     @tool
-    async def retrieve_papers(query: str) -> list[Document]:
+    async def retrieve_papers(query: str) -> str:
         """Search and return relevant arXiv research papers.
 
         Use this tool when the user asks about:
@@ -41,44 +42,44 @@ def create_retriever_tool(
         logger.info(f"Retrieving papers for query: {query[:100]}...")
         logger.debug(f"Search mode: {'hybrid' if use_hybrid else 'bm25'}, top_k: {top_k}")
 
-        # Generate query embedding
-        logger.debug("Generating query embedding")
-        query_embedding = await embeddings_client.embed_query(query)
-        logger.debug(f"Generated embedding with {len(query_embedding)} dimensions")
-
-        # Search using OpenSearch
-        logger.debug("Searching OpenSearch")
-        search_results = opensearch_client.search_unified(
+        logger.debug("Searching OpenSearch with retrieval planning")
+        hits, plan = await retrieve_relevant_hits(
             query=query,
-            query_embedding=query_embedding,
-            size=top_k,
+            opensearch_client=opensearch_client,
+            embeddings_client=embeddings_client,
+            top_k=top_k,
             use_hybrid=use_hybrid,
         )
+        logger.debug("Retrieval plan: subqueries=%s, section_types=%s", plan.subqueries, plan.section_types)
 
-        # Convert SearchHit to LangChain Document
-        documents = []
-        hits = search_results.get("hits", [])
         logger.info(f"Found {len(hits)} documents from OpenSearch")
-
+        payload_hits = []
         for hit in hits:
-            doc = Document(
-                page_content=hit["chunk_text"],
-                metadata={
-                    "arxiv_id": hit["arxiv_id"],
+            payload_hits.append(
+                {
+                    "arxiv_id": hit.get("arxiv_id", ""),
                     "title": hit.get("title", ""),
                     "authors": hit.get("authors", ""),
                     "score": hit.get("score", 0.0),
-                    "source": f"https://arxiv.org/pdf/{hit['arxiv_id']}.pdf",
-                    "section": hit.get("section_name", ""),
+                    "chunk_text": hit.get("chunk_text", ""),
+                    "section_title": hit.get("section_title", hit.get("section_name", "")),
+                    "section_path": hit.get("section_path", []),
+                    "section_type": hit.get("section_type", ""),
                     "search_mode": "hybrid" if use_hybrid else "bm25",
                     "top_k": top_k,
-                },
+                }
             )
-            documents.append(doc)
 
-        logger.debug(f"Converted {len(documents)} hits to LangChain Documents")
-        logger.info(f"✓ Retrieved {len(documents)} papers successfully")
-
-        return documents
+        logger.info(f"✓ Retrieved {len(payload_hits)} papers successfully")
+        return json.dumps(
+            {
+                "hits": payload_hits,
+                "plan": {
+                    "subqueries": plan.subqueries,
+                    "section_types": plan.section_types,
+                },
+            },
+            ensure_ascii=False,
+        )
 
     return retrieve_papers

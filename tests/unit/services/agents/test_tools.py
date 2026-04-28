@@ -1,7 +1,7 @@
-from unittest.mock import AsyncMock
+import json
+from unittest.mock import Mock
 
 import pytest
-from langchain_core.documents import Document
 from src.services.agents.tools import create_retriever_tool
 
 
@@ -21,18 +21,20 @@ async def test_create_retriever_tool_basic(mock_opensearch_client, mock_jina_emb
 
     # Invoke tool
     result = await tool.ainvoke({"query": "machine learning"})
+    payload = json.loads(result)
+    hits = payload["hits"]
 
     # Verify result
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert all(isinstance(doc, Document) for doc in result)
+    assert isinstance(payload, dict)
+    assert len(hits) == 2
 
     # Verify first document
-    first_doc = result[0]
-    assert first_doc.page_content == "Transformers are neural network architectures based on self-attention mechanisms."
-    assert first_doc.metadata["arxiv_id"] == "1706.03762"
-    assert first_doc.metadata["title"] == "Attention Is All You Need"
-    assert first_doc.metadata["score"] == 0.95
+    first_doc = hits[0]
+    assert first_doc["chunk_text"] == "Transformers are neural network architectures based on self-attention mechanisms."
+    assert first_doc["arxiv_id"] == "1706.03762"
+    assert first_doc["title"] == "Attention Is All You Need"
+    assert first_doc["score"] == 0.95
+    assert payload["plan"]["subqueries"] == ["machine learning"]
 
     # Verify embeddings were generated
     mock_jina_embeddings_client.embed_query.assert_called_once_with("machine learning")
@@ -48,7 +50,6 @@ async def test_create_retriever_tool_basic(mock_opensearch_client, mock_jina_emb
 @pytest.mark.asyncio
 async def test_retriever_tool_empty_results(mock_opensearch_client, mock_jina_embeddings_client):
     """Test retriever tool with no results."""
-    from unittest.mock import Mock
     mock_opensearch_client.search_unified = Mock(return_value={"hits": []})
 
     tool = create_retriever_tool(
@@ -57,9 +58,10 @@ async def test_retriever_tool_empty_results(mock_opensearch_client, mock_jina_em
     )
 
     result = await tool.ainvoke({"query": "nonexistent topic"})
+    payload = json.loads(result)
 
-    assert isinstance(result, list)
-    assert len(result) == 0
+    assert payload["hits"] == []
+    assert payload["plan"]["subqueries"] == ["nonexistent topic"]
 
 
 @pytest.mark.asyncio
@@ -83,7 +85,6 @@ async def test_retriever_tool_custom_top_k(mock_opensearch_client, mock_jina_emb
 @pytest.mark.asyncio
 async def test_retriever_tool_metadata_fields(mock_opensearch_client, mock_jina_embeddings_client):
     """Test that all expected metadata fields are present."""
-    from unittest.mock import Mock
     mock_opensearch_client.search_unified = Mock(return_value={
         "hits": [
             {
@@ -103,11 +104,58 @@ async def test_retriever_tool_metadata_fields(mock_opensearch_client, mock_jina_
     )
 
     result = await tool.ainvoke({"query": "test"})
+    payload = json.loads(result)
 
-    doc = result[0]
-    assert "arxiv_id" in doc.metadata
-    assert "title" in doc.metadata
-    assert "authors" in doc.metadata
-    assert "score" in doc.metadata
-    assert "source" in doc.metadata
-    assert "section" in doc.metadata
+    doc = payload["hits"][0]
+    assert "arxiv_id" in doc
+    assert "title" in doc
+    assert "authors" in doc
+    assert "score" in doc
+    assert "chunk_text" in doc
+    assert "section_title" in doc
+
+
+@pytest.mark.asyncio
+async def test_retriever_tool_decomposes_and_boosts_sections(mock_opensearch_client, mock_jina_embeddings_client):
+    """Test complex questions use section-aware retrieval planning."""
+    mock_opensearch_client.search_unified = Mock(
+        return_value={
+            "hits": [
+                {
+                    "chunk_id": "method",
+                    "chunk_text": "The method uses a controller.",
+                    "arxiv_id": "2601.00001",
+                    "title": "Policy Controller",
+                    "authors": "Author One",
+                    "score": 4.0,
+                    "section_title": "Method",
+                    "section_type": "method",
+                },
+                {
+                    "chunk_id": "experiment",
+                    "chunk_text": "Experiments compare against baselines and report success rates.",
+                    "arxiv_id": "2601.00001",
+                    "title": "Policy Controller",
+                    "authors": "Author One",
+                    "score": 1.0,
+                    "section_title": "Experiments",
+                    "section_type": "experiment",
+                },
+            ]
+        }
+    )
+
+    tool = create_retriever_tool(
+        opensearch_client=mock_opensearch_client,
+        embeddings_client=mock_jina_embeddings_client,
+        top_k=1,
+        use_hybrid=True,
+    )
+
+    result = await tool.ainvoke({"query": "实验部分用了什么方法，有什么效果？"})
+    payload = json.loads(result)
+
+    assert mock_opensearch_client.search_unified.call_count > 1
+    assert mock_opensearch_client.search_unified.call_args_list[0].kwargs["section_types"] == ["experiment", "method"]
+    assert payload["hits"][0]["section_type"] == "experiment"
+    assert payload["plan"]["section_types"] == ["experiment", "method"]

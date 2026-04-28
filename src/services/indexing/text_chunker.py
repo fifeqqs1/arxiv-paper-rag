@@ -1,11 +1,55 @@
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 
 from src.schemas.indexing.models import ChunkMetadata, TextChunk
 
 logger = logging.getLogger(__name__)
+
+
+SECTION_TYPE_HINTS = {
+    "abstract": ("abstract",),
+    "introduction": ("introduction", "background", "motivation"),
+    "related_work": ("related work", "literature review", "prior work"),
+    "method": (
+        "method",
+        "methods",
+        "methodology",
+        "approach",
+        "model",
+        "framework",
+        "architecture",
+        "algorithm",
+        "proposed",
+    ),
+    "experiment": (
+        "experiment",
+        "experiments",
+        "experimental",
+        "evaluation",
+        "results",
+        "baseline",
+        "baselines",
+        "ablation",
+        "analysis",
+        "benchmark",
+    ),
+    "limitation": ("limitation", "limitations", "discussion", "failure", "future work"),
+    "conclusion": ("conclusion", "conclusions"),
+    "reference": ("reference", "references", "bibliography"),
+    "appendix": ("appendix", "supplementary"),
+}
+
+
+@dataclass
+class SectionBlock:
+    title: str
+    content: str
+    level: int = 1
+    path: list[str] = field(default_factory=list)
+    section_type: str = "content"
 
 
 class TextChunker:
@@ -111,7 +155,7 @@ class TextChunker:
             if words:
                 return [
                     TextChunk(
-                        text=self._reconstruct_text(words, text),
+                        text=self._reconstruct_text(words),
                         metadata=ChunkMetadata(
                             chunk_index=0,
                             start_char=0,
@@ -188,14 +232,14 @@ class TextChunker:
         :param sections: Sections data
         :returns: List of text chunks
         """
-        # Parse sections data
-        sections_dict = self._parse_sections(sections)
-        if not sections_dict:
+        # Parse sections data and rebuild a lightweight title path when possible.
+        section_blocks = self._parse_section_blocks(sections)
+        if not section_blocks:
             return []
 
         # Filter and clean sections
-        sections_dict = self._filter_sections(sections_dict, abstract)
-        if not sections_dict:
+        section_blocks = self._filter_section_blocks(section_blocks, abstract)
+        if not section_blocks:
             logger.warning(f"No meaningful sections found after filtering for {arxiv_id}")
             return []
 
@@ -206,39 +250,126 @@ class TextChunker:
         chunks = []
         small_sections = []  # Buffer for combining small sections
 
-        section_items = list(sections_dict.items())
-
-        for i, (section_title, section_content) in enumerate(section_items):
-            content_str = str(section_content) if section_content else ""
+        for i, section in enumerate(section_blocks):
+            section_title = section.title
+            content_str = section.content
             section_words = len(content_str.split())
 
             if section_words < 100:
                 # Collect small sections to combine later
-                small_sections.append((section_title, content_str, section_words))
+                small_sections.append(section)
 
                 # If this is the last section or next section is large, process accumulated small sections
-                if i == len(section_items) - 1 or len(str(section_items[i + 1][1]).split()) >= 100:
+                if i == len(section_blocks) - 1 or len(section_blocks[i + 1].content.split()) >= 100:
                     chunks.extend(self._create_combined_chunk(header, small_sections, chunks, arxiv_id, paper_id))
                     small_sections = []
 
             elif 100 <= section_words <= 800:
                 # Perfect size - create single chunk
-                chunk_text = f"{header}Section: {section_title}\n\n{content_str}"
-                chunk = self._create_section_chunk(chunk_text, section_title, len(chunks), arxiv_id, paper_id)
+                chunk_text = f"{header}{self._format_section_header(section)}\n\n{content_str}"
+                chunk = self._create_section_chunk(chunk_text, section, len(chunks), arxiv_id, paper_id)
                 chunks.append(chunk)
 
             else:
                 # Large section - split using traditional chunking
-                section_text = f"Section: {section_title}\n\n{content_str}"
+                section_text = f"{self._format_section_header(section)}\n\n{content_str}"
                 full_section_text = f"{header}{section_text}"
 
                 # Use traditional chunking but with section context
                 section_chunks = self._split_large_section(
-                    full_section_text, header, section_title, len(chunks), arxiv_id, paper_id
+                    full_section_text, header, section, len(chunks), arxiv_id, paper_id
                 )
                 chunks.extend(section_chunks)
 
         return chunks
+
+    def _parse_section_blocks(self, sections: Union[Dict[str, str], str, list]) -> list[SectionBlock]:
+        """Parse section payload and preserve hierarchy metadata when available."""
+        raw_items: list[dict[str, object]] = []
+
+        if isinstance(sections, str):
+            try:
+                sections = json.loads(sections)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse sections JSON")
+                return []
+
+        if isinstance(sections, dict):
+            raw_items = [
+                {"title": str(title), "content": str(content or ""), "level": self._infer_section_level(str(title))}
+                for title, content in sections.items()
+            ]
+        elif isinstance(sections, list):
+            for i, section in enumerate(sections):
+                if isinstance(section, dict):
+                    title = str(section.get("title", section.get("heading", f"Section {i + 1}")) or "")
+                    inferred_level = self._infer_section_level(title)
+                    try:
+                        raw_level = int(section.get("level") or 0)
+                    except (TypeError, ValueError):
+                        raw_level = 0
+                    raw_items.append(
+                        {
+                            "title": title,
+                            "content": str(section.get("content", section.get("text", "")) or ""),
+                            "level": max(raw_level, inferred_level, 1),
+                        }
+                    )
+                else:
+                    title = f"Section {i + 1}"
+                    raw_items.append({"title": title, "content": str(section), "level": 1})
+
+        blocks: list[SectionBlock] = []
+        stack: list[SectionBlock] = []
+        for item in raw_items:
+            title = str(item.get("title", "")).strip() or "Untitled Section"
+            content = str(item.get("content", "") or "")
+            level = max(1, int(item.get("level") or self._infer_section_level(title)))
+            section = SectionBlock(
+                title=title,
+                content=content,
+                level=level,
+                section_type=self._classify_section_type(title),
+            )
+
+            while stack and stack[-1].level >= level:
+                stack.pop()
+            stack.append(section)
+            section.path = [block.title for block in stack]
+            blocks.append(section)
+
+        return blocks
+
+    @staticmethod
+    def _infer_section_level(section_title: str) -> int:
+        """Infer hierarchy level from numbered headings such as '3.2 Baselines'."""
+        normalized = section_title.strip()
+        match = re.match(r"^(?:section\s+)?([A-Z]|\d+(?:\.\d+)*)\.?\s+", normalized, flags=re.IGNORECASE)
+        if not match:
+            return 1
+
+        marker = match.group(1)
+        if marker.isalpha():
+            return 1
+        return max(1, marker.count(".") + 1)
+
+    @staticmethod
+    def _classify_section_type(section_title: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9\s-]", " ", section_title.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        for section_type, hints in SECTION_TYPE_HINTS.items():
+            if any(hint in normalized for hint in hints):
+                return section_type
+        return "content"
+
+    @staticmethod
+    def _format_section_header(section: SectionBlock) -> str:
+        path = " > ".join(section.path or [section.title])
+        return f"Section path: {path}\nSection type: {section.section_type}"
+
+    def _filter_section_blocks(self, sections: list[SectionBlock], abstract: str) -> list[SectionBlock]:
+        filtered_dict = self._filter_sections({section.title: section.content for section in sections}, abstract)
+        return [section for section in sections if section.title in filtered_dict]
 
     def _parse_sections(self, sections: Union[Dict[str, str], str, list]) -> Dict[str, str]:
         """Parse sections data into a dictionary."""
@@ -388,7 +519,7 @@ class TextChunker:
         return False
 
     def _create_combined_chunk(
-        self, header: str, small_sections: List, existing_chunks: List, arxiv_id: str, paper_id: str
+        self, header: str, small_sections: List[SectionBlock], existing_chunks: List, arxiv_id: str, paper_id: str
     ) -> List[TextChunk]:
         """Create chunks by combining small sections."""
         if not small_sections:
@@ -398,9 +529,9 @@ class TextChunker:
         combined_content = []
         total_words = 0
 
-        for section_title, content, word_count in small_sections:
-            combined_content.append(f"Section: {section_title}\n\n{content}")
-            total_words += word_count
+        for section in small_sections:
+            combined_content.append(f"{self._format_section_header(section)}\n\n{section.content}")
+            total_words += len(section.content.split())
 
         combined_text = f"{header}{'\\n\\n'.join(combined_content)}"
 
@@ -421,6 +552,9 @@ class TextChunker:
                     overlap_with_previous=0,
                     overlap_with_next=0,
                     section_title=f"{prev_chunk.metadata.section_title} + Combined",
+                    section_path=prev_chunk.metadata.section_path,
+                    section_level=prev_chunk.metadata.section_level,
+                    section_type=prev_chunk.metadata.section_type,
                 ),
                 arxiv_id=arxiv_id,
                 paper_id=paper_id,
@@ -428,16 +562,23 @@ class TextChunker:
             return []
 
         # Create new chunk with combined content
-        sections_titles = [title for title, _, _ in small_sections]
+        sections_titles = [section.title for section in small_sections]
         combined_title = " + ".join(sections_titles[:3])  # Limit title length
         if len(sections_titles) > 3:
             combined_title += f" + {len(sections_titles) - 3} more"
 
-        chunk = self._create_section_chunk(combined_text, combined_title, len(existing_chunks), arxiv_id, paper_id)
+        combined_section = SectionBlock(
+            title=combined_title,
+            content="\n\n".join(section.content for section in small_sections),
+            level=min(section.level for section in small_sections),
+            path=small_sections[0].path[:-1] + [combined_title],
+            section_type=small_sections[0].section_type,
+        )
+        chunk = self._create_section_chunk(combined_text, combined_section, len(existing_chunks), arxiv_id, paper_id)
         return [chunk]
 
     def _create_section_chunk(
-        self, chunk_text: str, section_title: str, chunk_index: int, arxiv_id: str, paper_id: str
+        self, chunk_text: str, section: SectionBlock, chunk_index: int, arxiv_id: str, paper_id: str
     ) -> TextChunk:
         """Create a single section-based chunk."""
         return TextChunk(
@@ -449,14 +590,17 @@ class TextChunker:
                 word_count=len(chunk_text.split()),
                 overlap_with_previous=0,
                 overlap_with_next=0,
-                section_title=section_title,
+                section_title=section.title,
+                section_path=section.path,
+                section_level=section.level,
+                section_type=section.section_type,
             ),
             arxiv_id=arxiv_id,
             paper_id=paper_id,
         )
 
     def _split_large_section(
-        self, full_section_text: str, header: str, section_title: str, base_chunk_index: int, arxiv_id: str, paper_id: str
+        self, full_section_text: str, header: str, section: SectionBlock, base_chunk_index: int, arxiv_id: str, paper_id: str
     ) -> List[TextChunk]:
         """Split large sections using traditional word-based chunking."""
         # Remove header from section text for chunking, then add back to each chunk
@@ -479,7 +623,10 @@ class TextChunker:
                     word_count=len(enhanced_text.split()),
                     overlap_with_previous=chunk.metadata.overlap_with_previous,
                     overlap_with_next=chunk.metadata.overlap_with_next,
-                    section_title=f"{section_title} (Part {i + 1})",
+                    section_title=f"{section.title} (Part {i + 1})",
+                    section_path=section.path,
+                    section_level=section.level,
+                    section_type=section.section_type,
                 ),
                 arxiv_id=arxiv_id,
                 paper_id=paper_id,

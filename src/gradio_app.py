@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 API_BASE_URL = "http://localhost:8001/api/v1"
-DEFAULT_MODEL = "qwen2.5:7b"
+DEFAULT_MODEL = "qwen3.5-plus"
 AVAILABLE_CATEGORIES = ["cs.AI", "cs.LG"]
 
 
@@ -25,7 +25,14 @@ async def stream_response(
     category_list = [cat.strip() for cat in categories.split(",") if cat.strip()] if categories else None
 
     # Prepare request payload
-    payload = {"query": query, "top_k": top_k, "use_hybrid": use_hybrid, "model": model, "categories": category_list}
+    payload = {
+        "query": query,
+        "top_k": top_k,
+        "use_hybrid": use_hybrid,
+        "provider": "qwen_api",
+        "model": model,
+        "categories": category_list,
+    }
 
     try:
         url = f"{API_BASE_URL}/stream"
@@ -151,10 +158,10 @@ def create_gradio_interface():
                     )
 
                     model_choice = gr.Dropdown(
-                        choices=["qwen2.5:7b", "llama3.2:1b", "llama3.2:3b", "llama3.1:8b"],
+                        choices=["qwen3.5-plus"],
                         value=DEFAULT_MODEL,
                         label="LLM Model",
-                        info="Larger models may give better answers but are slower",
+                        info="Uses the configured Qwen API model",
                     )
 
                     categories = gr.Textbox(
@@ -170,11 +177,11 @@ def create_gradio_interface():
         # Examples
         gr.Examples(
             examples=[
-                ["What are transformers in machine learning?", 3, True, "qwen2.5:7b", "cs.AI, cs.LG"],
-                ["How do convolutional neural networks work?", 5, True, "qwen2.5:7b", "cs.CV, cs.LG"],
-                ["What is attention mechanism in deep learning?", 4, False, "qwen2.5:7b", "cs.AI"],
-                ["Explain reinforcement learning algorithms", 3, True, "qwen2.5:7b", "cs.LG, cs.AI"],
-                ["What are the latest developments in NLP?", 5, True, "qwen2.5:7b", "cs.CL"],
+                ["What are transformers in machine learning?", 3, True, "qwen3.5-plus", "cs.AI, cs.LG"],
+                ["How do convolutional neural networks work?", 5, True, "qwen3.5-plus", "cs.CV, cs.LG"],
+                ["What is attention mechanism in deep learning?", 4, False, "qwen3.5-plus", "cs.AI"],
+                ["Explain reinforcement learning algorithms", 3, True, "qwen3.5-plus", "cs.LG, cs.AI"],
+                ["What are the latest developments in NLP?", 5, True, "qwen3.5-plus", "cs.CL"],
             ],
             inputs=[query_input, top_k, use_hybrid, model_choice, categories],
         )

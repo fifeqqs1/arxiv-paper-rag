@@ -56,7 +56,7 @@ async def hybrid_search(
                     highlights=hit.get("highlights"),
                     chunk_text=hit.get("chunk_text"),
                     chunk_id=hit.get("chunk_id"),
-                    section_name=hit.get("section_name"),
+                    section_name=hit.get("section_title", hit.get("section_name")),
                 )
             )
 

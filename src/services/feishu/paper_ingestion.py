@@ -54,6 +54,42 @@ TOKEN_EXPANSIONS = (
         ("机器人", "robot", "robotics"),
         ("robotics", "robot"),
     ),
+    (
+        ("大模型", "大型语言模型", "语言模型", "llm", "large language model"),
+        ("large language model", "LLM"),
+    ),
+    (
+        ("幻觉", "hallucination", "hallucinations"),
+        ("hallucination", "faithfulness", "factuality"),
+    ),
+    (
+        ("检索增强", "rag", "retrieval augmented generation", "retrieval-augmented generation"),
+        ("retrieval augmented generation", "RAG"),
+    ),
+    (
+        ("多模态", "multimodal", "multi-modal"),
+        ("multimodal", "multi-modal"),
+    ),
+    (
+        ("视觉语言", "视觉-语言", "vision language", "vision-language"),
+        ("vision language", "vision-language"),
+    ),
+    (
+        ("具身智能", "embodied ai", "embodied intelligence"),
+        ("embodied AI", "embodied intelligence"),
+    ),
+    (
+        ("强化学习", "reinforcement learning", "rl"),
+        ("reinforcement learning", "RL"),
+    ),
+    (
+        ("扩散模型", "diffusion model", "diffusion"),
+        ("diffusion model", "diffusion"),
+    ),
+    (
+        ("图神经网络", "gnn", "graph neural network"),
+        ("graph neural network", "GNN"),
+    ),
 )
 
 ENGLISH_STOPWORDS = {
@@ -84,6 +120,23 @@ ROBOTICS_HINTS = {
     "path planning",
     "robot",
     "robotics",
+}
+
+LANGUAGE_MODEL_HINTS = {
+    "large language model",
+    "llm",
+    "hallucination",
+    "faithfulness",
+    "factuality",
+    "retrieval augmented generation",
+    "rag",
+}
+
+VISION_HINTS = {
+    "multimodal",
+    "multi-modal",
+    "vision language",
+    "vision-language",
 }
 
 
@@ -139,6 +192,10 @@ class FeishuPaperIngestionService:
         normalized_terms = {term.lower() for term in terms}
         if normalized_terms & ROBOTICS_HINTS:
             base_query = f"{base_query} AND (cat:cs.RO OR cat:cs.CV OR cat:cs.AI OR cat:cs.LG)"
+        elif normalized_terms & LANGUAGE_MODEL_HINTS:
+            base_query = f"{base_query} AND (cat:cs.CL OR cat:cs.AI OR cat:cs.LG)"
+        elif normalized_terms & VISION_HINTS:
+            base_query = f"{base_query} AND (cat:cs.CV OR cat:cs.AI OR cat:cs.LG)"
 
         return base_query
 
