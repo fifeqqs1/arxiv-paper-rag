@@ -1,146 +1,112 @@
-# arXiv Paper RAG
+# MortyClaw Core
 
-An end-to-end RAG system for collecting, indexing, searching, and explaining arXiv papers. The project combines FastAPI, PostgreSQL, OpenSearch, Redis, Airflow, LangGraph, Langfuse, Ollama/Qwen-compatible generation, Gradio, Telegram, and Feishu integrations.
+MortyClaw is a transparent, controllable, memory-enabled local Agent runtime built with LangGraph and LangChain. This repository currently keeps the core source code only, focused on task routing, planning, approval, execution, memory, runtime persistence, and terminal observability.
 
-## Features
+The public repository intentionally excludes local runtime artifacts, documentation assets, private configuration, and other non-core files.
 
-- Automated arXiv paper ingestion with PDF download and parsing
-- PostgreSQL storage for paper metadata and parsed content
-- OpenSearch BM25 and hybrid retrieval
-- Chunking and indexing pipeline for long academic papers
-- RAG answer generation with source citations
-- Agentic RAG workflow with query rewriting, guardrails, grading, and answer generation
-- Redis exact-match caching
-- Langfuse tracing for observability
-- Gradio web UI
-- Telegram and Feishu bot integrations
+## What This Repo Includes
 
-## Project Layout
+- `mortyclaw/`: core Agent runtime, workflow nodes, tools, memory, storage, observability
+- `entry/`: CLI entrypoints for `config`, `run`, `monitor`, `heartbeat`, and related commands
+- `requirements.txt` and `setup.py`: minimal packaging and dependency definition
+- `.env.example`: safe configuration template without secrets
 
-```text
-.
-├── airflow/                 # Airflow DAGs and runtime image
-├── scripts/                 # Local ingestion helpers
-├── src/                     # API, services, schemas, and app code
-├── tests/                   # Unit, API, and integration tests
-├── compose.yml              # Local service stack
-├── Dockerfile               # API image
-├── Makefile                 # Common development commands
-└── pyproject.toml           # Python dependencies and tooling
+## Core Capabilities
+
+- LangGraph-based runtime graph with `router`, `planner`, `approval_gate`, `reviewer`, and final execution flow
+- Fast / slow task routing for lightweight requests and multi-step high-risk work
+- Approval-gated execution for file writes, shell commands, and other sensitive operations
+- Layered memory with working memory, session memory, and long-term memory
+- SQLite-backed runtime state for sessions, tasks, task runs, and inbox events
+- Structured handoff summaries for long-context compression and interrupted-task recovery
+- Project and office tool boundaries for safer local automation
+- JSONL audit logs and terminal monitor for end-to-end observability
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+pip install -e .
 ```
 
-`notebooks/`, local documentation assets, `.env`, local data, OpenSearch volumes, and Ollama model data are intentionally ignored and are not uploaded to Git.
+## Configuration
 
-## Requirements
-
-- Python 3.12
-- Docker and Docker Compose
-- uv package manager
-- Ollama or a Qwen-compatible API endpoint
-- Optional API keys for Jina, Langfuse, Telegram, and Feishu
-
-## Setup
-
-Copy the example environment file and fill in local values:
+Copy the example file and fill in your local values:
 
 ```bash
 cp .env.example .env
 ```
 
-Install dependencies:
+The real `.env` file must stay local and should never be committed.
+
+## CLI Usage
+
+Configure model settings:
 
 ```bash
-uv sync
+mortyclaw config
 ```
 
-Start the local stack:
+Start the interactive runtime:
 
 ```bash
-docker compose up -d
+mortyclaw run
+mortyclaw run --new
+mortyclaw run --thread-id local_geek_master
 ```
 
-Run database and service checks:
+Monitor a session:
 
 ```bash
-make test
+mortyclaw monitor --latest
+mortyclaw monitor --thread-id local_geek_master
 ```
 
-## Ingest Papers
-
-Fetch recent papers and index them:
+Run scheduled task delivery:
 
 ```bash
-uv run python scripts/ingest_recent_papers.py --max-results 5
+mortyclaw heartbeat
+mortyclaw heartbeat --interval 5
 ```
 
-You can also search by a custom arXiv query:
-
-```bash
-uv run python scripts/ingest_recent_papers.py --search-query "all:UAV OR all:drone" --max-results 5
-```
-
-## API
-
-Start the API locally:
-
-```bash
-uv run fastapi dev src/main.py
-```
-
-Useful endpoints:
+## Repository Layout
 
 ```text
-GET  /health
-POST /api/v1/search
-POST /api/v1/hybrid-search/
-POST /api/v1/ask
-POST /api/v1/ask-agentic
-POST /api/v1/stream
+.
+├── entry/
+│   ├── cli.py
+│   ├── main.py
+│   └── monitor.py
+├── mortyclaw/
+│   └── core/
+│       ├── agent/
+│       ├── approval/
+│       ├── context/
+│       ├── memory/
+│       ├── observability/
+│       ├── planning/
+│       ├── routing/
+│       ├── runtime/
+│       ├── storage/
+│       └── tools/
+├── .env.example
+├── requirements.txt
+└── setup.py
 ```
 
-Example RAG request:
+## Intentionally Excluded From This Repo
 
-```bash
-curl -X POST http://localhost:8000/api/v1/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Explain the interception method in arXiv:2603.16279v1","top_k":5,"use_hybrid":true}'
-```
+To keep the repository focused on reusable core code, the following content is intentionally not uploaded:
 
-## Web UI
+- `docs/`
+- `.env` and any other secret-bearing local environment files
+- `workspace/`
+- `logs/` and archived runtime logs
+- local SQLite runtime databases
+- local office files, generated artifacts, and experimental data
 
-Run the Gradio interface:
+## Notes
 
-```bash
-uv run python gradio_launcher.py
-```
-
-## Airflow
-
-Airflow is included for scheduled ingestion. After the Docker stack starts, open:
-
-```text
-http://localhost:8080
-```
-
-The main DAG is `arxiv_paper_ingestion`.
-
-## Safety Notes
-
-- `.env` is ignored and should hold real secrets only locally.
-- `ollama_data/` is ignored so local model weights are not committed.
-- `opensearch_data/` and `data/` are ignored to avoid uploading generated indexes, PDFs, and parsed data.
-- `notebooks/` is ignored and kept local only.
-
-## Development
-
-Run tests:
-
-```bash
-uv run pytest
-```
-
-Run lint checks:
-
-```bash
-uv run ruff check src tests
-```
+- This repository is meant to publish the core implementation only.
+- If you want to run the system locally, use `.env.example` as the starting point and create your own local `.env`.
+- Runtime data such as sessions, tasks, logs, and memory stores should remain outside version control.

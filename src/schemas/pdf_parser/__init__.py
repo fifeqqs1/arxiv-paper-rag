@@ -1,1 +1,0 @@
-# PDF Parser service schemas

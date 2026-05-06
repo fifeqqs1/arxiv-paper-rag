@@ -100,6 +100,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -182,7 +184,19 @@ static/week*_*.png
 static/mother_of_ai_project_rag_architecture.gif
 static/langgraph-mermaid.png
 
+# MortyClaw core repo excludes local docs and runtime artifacts
+docs/
+workspace/
+logs/
+logs_archive/
+sessions/
+rick/
+*.jsonl
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.Zone.Identifier
+
 # Test files and output
 test_output/
 test_data/
-

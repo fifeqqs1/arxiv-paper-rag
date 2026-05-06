@@ -1,1 +1,0 @@
-# ArXiv service schemas
