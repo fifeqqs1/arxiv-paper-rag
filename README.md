@@ -4,9 +4,15 @@ MortyClaw is a transparent, controllable, memory-enabled local Agent runtime bui
 
 The public repository intentionally excludes local runtime artifacts, documentation assets, private configuration, and other non-core files.
 
+It now contains two paired modules:
+
+- `mortyclaw/`: the local Agent runtime and execution core
+- `arxiv_rag/`: the companion paper RAG project used for retrieval, question answering, and paper-oriented workflows
+
 ## What This Repo Includes
 
 - `mortyclaw/`: core Agent runtime, workflow nodes, tools, memory, storage, observability
+- `arxiv_rag/`: restored companion RAG project snapshot, kept as a sibling top-level directory
 - `entry/`: CLI entrypoints for `config`, `run`, `monitor`, `heartbeat`, and related commands
 - `requirements.txt` and `setup.py`: minimal packaging and dependency definition
 - `.env.example`: safe configuration template without secrets
@@ -77,6 +83,12 @@ mortyclaw heartbeat --interval 5
 │   ├── cli.py
 │   ├── main.py
 │   └── monitor.py
+├── arxiv_rag/
+│   ├── src/
+│   ├── scripts/
+│   ├── airflow/
+│   ├── eval/
+│   └── pyproject.toml
 ├── mortyclaw/
 │   └── core/
 │       ├── agent/
